@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Canvas — Blocks + Centroid Graph (+ Flip X + Metadata)</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            height: 100%;
+            overflow: hidden;
+            font-family: sans-serif;
+        }
+
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: #fff;
+            padding: 6px 10px;
+            border: 1px solid #ccc;
+            font-size: 14px;
+            z-index: 1001;
+            user-select: none;
+            border-radius: 6px;
+        }
+
+        #controls button {
+            padding: 4px 8px;
+            margin-right: 6px;
+            cursor: pointer;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            display: block;
+            background: #000;
+            z-index: 0;
+        }
+
+        #tooltip {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.95);
+            border: 1px solid #aaa;
+            padding: 6px 8px;
+            font-size: 12px;
+            pointer-events: none;
+            display: none;
+            z-index: 1002;
+            border-radius: 6px;
+        }
+
+        /* Right-side metadata panel */
+        #sidebar {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 280px;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.98);
+            border-left: 1px solid #ccc;
+            padding: 12px 12px 16px;
+            box-sizing: border-box;
+            z-index: 1001;
+            overflow-y: auto;
+        }
+
+        #sidebar h2 {
+            margin: 0 0 8px 0;
+            font-size: 16px;
+        }
+
+        #sidebar .kv {
+            font-size: 13px;
+            line-height: 1.35;
+            margin: 6px 0;
+        }
+
+        #sidebar .kv b {
+            display: inline-block;
+            width: 120px;
+            color: #333;
+        }
+
+        #sidebar .legend {
+            margin-top: 12px;
+            font-size: 12px;
+        }
+
+        #sidebar .sw {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            margin-right: 6px;
+            vertical-align: middle;
+            border-radius: 50%;
+        }
+
+        #sidebar .chip {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: #eee;
+            font-size: 12px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="controls">
+        <button id="resetBtn">Reset View</button>
+        <button id="rotateLeftBtn">↺ Rotate Left</button>
+        <button id="rotateRightBtn">↻ Rotate Right</button>
+        <button id="toggleBlocksBtn">🗺️ Blocks</button>
+        <button id="flipXBtn">⇋ Flip X</button>
+    </div>
+
+    <!-- Fixed right panel for metadata -->
+    <aside id="sidebar">
+        <h2>Tree Metadata</h2>
+        <div id="metaRows">
+            <!-- filled at runtime -->
+        </div>
+        <div class="legend">
+            <div><span class="sw" style="background: #ffd54f; border:1px solid #444;"></span>Root node (star)</div>
+            <div><span class="sw" style="background: #2e7d32;"></span>Within tolerance (green)</div>
+            <div><span class="sw" style="background: #d32f2f;"></span>Outside tolerance (red)</div>
+        </div>
+    </aside>
+
+    <canvas id="graphCanvas"></canvas>
+    <div id="tooltip"></div>
+
+    <script>
+        const canvas = document.getElementById("graphCanvas");
+        const ctx = canvas.getContext("2d");
+        const tooltip = document.getElementById("tooltip");
+        const metaRows = document.getElementById("metaRows");
+        // Visual style (values are in *screen pixels*; we scale by transform.k)
+        const STYLE = {
+            rootOuterPx: 12,      // ↑ bigger star (try 10–16)
+            rootInset: 0.5,       // star inner/outer ratio (0.4–0.6 looks good)
+
+            nodeRadiusPx: 2,    // ↑ bigger nodes (was ~1.8)
+            nodeStrokePx: 1.2,    // white outline thickness
+
+            greenFill: "#00e676", // vivid green (material "A400")
+            greenStroke: "rgba(255,255,255,0.95)", // crisp white outline
+            redFill: "#ff5252",   // brighter red
+            redStroke: "rgba(255,255,255,0.6)",
+
+            haloPx: 0             // optional glow around nodes; try 2–3 if you want a halo
+        };
+
+        function resize() { canvas.width = innerWidth; canvas.height = innerHeight; draw(); }
+        addEventListener('resize', resize);
+
+        // Controls
+        const resetBtn = document.getElementById("resetBtn");
+        const rotateLeftBtn = document.getElementById("rotateLeftBtn");
+        const rotateRightBtn = document.getElementById("rotateRightBtn");
+        const toggleBlocksBtn = document.getElementById("toggleBlocksBtn");
+        const flipXBtn = document.getElementById("flipXBtn");
+
+        // View transform
+        let transform = { x: 0, y: 0, k: 1, angle: 0 };
+        let initialTransform = null;
+        let center = { x: 0, y: 0 };
+        let flipX = false;
+
+        // Data
+        let nodes = [];     // centroid-based nodes
+        let links = [];
+        let nodesById = {};
+        let blocksVisible = true;
+
+        // Metadata from tree.json
+        let metadata = null;     // {ideal_pop, root, n_teams, epsilon, two_sided, tot_candidates, tot_pop}
+        let rootId = null;
+
+        // Blocks & centroids
+        const blocksPaths = [];        // Path2D polygons
+        let blocksBounds = null;       // [minx,miny,maxx,maxy]
+        const centroidByGeoID20 = new Map(); // "GEOID20" -> [lon,lat]
+        const centroidByGeoID = new Map(); // "GEOID"   -> [lon,lat]
+        const centroidByFeatId = new Map(); // feature.id -> [lon,lat]
+        let detectedSwap = false;
+
+        // ---------------- Tooltip formatter ----------------
+        const fmtInt = new Intl.NumberFormat('en-US');
+        const fmtFixed = (x, k = 6) => (Number.isFinite(x) ? x.toFixed(k) : "");
+
+        function nodeDegree(id) {
+            let d = 0;
+            for (const e of links) if (e.source === id || e.target === id) d++;
+            return d;
+        }
+
+        function renderTooltip(n) {
+            const pop = (n.population ?? null) !== null ? fmtInt.format(n.population) : "N/A";
+            const within = isWithinTolerance(n) ? "✅ within" : "❌ outside";
+            const isRoot = (n.id === rootId) ? " (root)" : "";
+
+            const yesNo = (v) => v ? "✅ Yes" : "❌ No";
+            const pill = (v, on = "#2e7d32", off = "#9e9e9e") =>
+                `<span style="padding:1px 8px;border-radius:999px;color:#fff;background:${v ? on : off}">${v ? "Yes" : "No"}</span>`;
+
+            return `
+                <div style="min-width:220px">
+                <div><b>Node</b> ${n.id}${isRoot}</div>
+                <div><b>Lon</b> ${fmtFixed(n.x, 6)}</div>
+                <div><b>Lat</b> ${fmtFixed(n.y, 6)}</div>
+                <div><b>Degree</b> ${nodeDegree(n.id)}</div>
+                <div><b>Population</b> ${pop} <span class="chip">${within}</span></div>
+                <hr style="border:none;border-top:1px solid #ddd;margin:6px 0;">
+                <div><b>has_facility</b> ${pill(!!n.has_facility)}</div>
+                <div><b>compl_facility</b> ${pill(!!n.compl_facility, "#1565c0")}</div>
+                <div><b>candidate</b> ${pill(!!n.candidate, "#6a1b9a")}</div>
+                </div>
+            `;
+        }
+
+        // ---------------- Helpers: blocks & centroids ----------------
+        function addPolygonPath(coords, swap) {
+            const path = new Path2D();
+            for (const ring of coords) {
+                if (!ring?.length) continue;
+                const first = swap ? [ring[0][1], ring[0][0]] : ring[0];
+                path.moveTo(first[0], first[1]);
+                for (let i = 1; i < ring.length; i++) {
+                    const pt = swap ? [ring[i][1], ring[i][0]] : ring[i];
+                    path.lineTo(pt[0], pt[1]);
+                }
+                path.closePath();
+            }
+            blocksPaths.push(path);
+        }
+
+        function getFeatureId(f) {
+            return f.id != null ? String(f.id) : undefined; // GeoPandas to_json often writes index here
+        }
+
+        function loadBlocks() {
+            return fetch("data/blocks.json").then(r => r.json()).then(gj => {
+                // detect coord order (lon,lat vs lat,lon)
+                const f0 = gj.features?.[0];
+                let sample;
+                if (f0?.geometry?.type === "Polygon") sample = f0.geometry.coordinates?.[0]?.[0];
+                else if (f0?.geometry?.type === "MultiPolygon") sample = f0.geometry.coordinates?.[0]?.[0]?.[0];
+                detectedSwap = false;
+                if (Array.isArray(sample) && sample.length >= 2) {
+                    const a = sample[0], b = sample[1];
+                    if (a > 40 && a < 43 && b < -80 && b > -90) detectedSwap = true; // looks like [lat,lon]
+                }
+
+                let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+
+                const pushBounds = (ring) => {
+                    for (const pt of ring) {
+                        const x = detectedSwap ? pt[1] : pt[0];
+                        const y = detectedSwap ? pt[0] : pt[1];
+                        if (x < minx) minx = x; if (y < miny) miny = y;
+                        if (x > maxx) maxx = x; if (y > maxy) maxy = y;
+                    }
+                };
+
+                for (const f of gj.features ?? []) {
+                    const g = f.geometry;
+                    if (!g) continue;
+
+                    // Paths + bounds
+                    if (g.type === "Polygon") {
+                        addPolygonPath(g.coordinates, detectedSwap);
+                        g.coordinates.forEach(pushBounds);
+                    } else if (g.type === "MultiPolygon") {
+                        for (const poly of g.coordinates) {
+                            addPolygonPath(poly, detectedSwap);
+                            poly.forEach(pushBounds);
+                        }
+                    }
+
+                    // Centroid (outer ring)
+                    const outer = g.type === "Polygon" ? g.coordinates[0]
+                        : g.type === "MultiPolygon" ? g.coordinates[0][0]
+                            : null;
+                    if (outer) {
+                        let a = 0, cx = 0, cy = 0;
+                        for (let i = 0; i < outer.length - 1; i++) {
+                            const p0 = detectedSwap ? [outer[i][1], outer[i][0]] : outer[i];
+                            const p1 = detectedSwap ? [outer[i + 1][1], outer[i + 1][0]] : outer[i + 1];
+                            const cross = p0[0] * p1[1] - p1[0] * p0[1];
+                            a += cross; cx += (p0[0] + p1[0]) * cross; cy += (p0[1] + p1[1]) * cross;
+                        }
+                        let lon, lat;
+                        if (Math.abs(a) < 1e-12) {
+                            let sx = 0, sy = 0; for (const pt of outer) { const x = detectedSwap ? pt[1] : pt[0]; const y = detectedSwap ? pt[0] : pt[1]; sx += x; sy += y; }
+                            const m = outer.length || 1; lon = sx / m; lat = sy / m;
+                        } else {
+                            a *= 0.5; lon = cx / (6 * a); lat = cy / (6 * a);
+                        }
+
+                        const fid = getFeatureId(f);
+                        if (fid) centroidByFeatId.set(fid, [lon, lat]);
+                        const gid20 = f.properties?.GEOID20;
+                        if (gid20) centroidByGeoID20.set(String(gid20), [lon, lat]);
+                        const gid = f.properties?.GEOID;
+                        if (gid) centroidByGeoID.set(String(gid), [lon, lat]);
+                    }
+                }
+
+                blocksBounds = (minx < maxx && miny < maxy) ? [minx, miny, maxx, maxy] : null;
+
+                console.log("Blocks:", {
+                    polys: blocksPaths.length,
+                    bounds: blocksBounds,
+                    swapDetected: detectedSwap,
+                    centroids: {
+                        GEOID20: centroidByGeoID20.size,
+                        GEOID: centroidByGeoID.size,
+                        featId: centroidByFeatId.size
+                    }
+                });
+            }).catch(err => console.error("Failed to load blocks.geojson:", err));
+        }
+
+        // ---------- Graph loading: map nodes to block centroids & read metadata ----------
+        function loadGraphAndProjectToCentroids() {
+            return fetch("data/int_trees/tree_2.json").then(r => r.json()).then(data => {
+                metadata = data.metadata || null;
+                rootId = metadata?.root != null ? String(metadata.root) : null;
+                fillMetadataPanel();
+
+                const rawNodes = data.nodes || [];
+                const rawLinks = data.links || [];
+
+                nodes = [];
+                const missing = [];
+                for (const n of rawNodes) {
+                    const idStr = String(n.id);
+                    const key =
+                        (n.GEOID20 != null ? String(n.GEOID20) : null) ||
+                        (n.GEOID != null ? String(n.GEOID) : null) ||
+                        null;
+
+                    let c = null;
+                    if (key && centroidByGeoID20.size) c = centroidByGeoID20.get(key);
+                    if (!c && key && centroidByGeoID.size) c = centroidByGeoID.get(key);
+                    if (!c) c = centroidByFeatId.get(idStr); // last-resort: feature.id
+
+                    if (!c) {
+                        missing.push({ id: idStr, GEOID20: n.GEOID20, GEOID: n.GEOID });
+                        continue;
+                    }
+                    nodes.push({
+                        id: idStr,
+                        x: +c[0], y: +c[1],
+                        has_facility: n.has_facility,
+                        compl_facility: n.compl_facility,
+                        population: n.population,
+                        candidate: n.candidate ?? 0
+                    });
+                }
+                if (missing.length) {
+                    console.warn(`Centroid missing for ${missing.length} node ids; first few:`, missing.slice(0, 10));
+                } else {
+                    console.log("All node centroids resolved.");
+                }
+
+                nodesById = Object.fromEntries(nodes.map(n => [n.id, n]));
+
+                links = [];
+                let unresolvedLinks = 0;
+                for (const e of rawLinks) {
+                    const a = nodesById[String(e.source)];
+                    const b = nodesById[String(e.target)];
+                    if (a && b) links.push({ source: a.id, target: b.id });
+                    else unresolvedLinks++;
+                }
+                if (unresolvedLinks) console.warn("Unresolved links:", unresolvedLinks);
+            }).catch(err => console.error("Failed to load tree.json:", err));
+        }
+
+        // ---------- Metadata panel ----------
+        function fillMetadataPanel() {
+            if (!metadata) {
+                metaRows.innerHTML = "<div class='kv'>No metadata found.</div>";
+                return;
+            }
+            const kv = (k, v) => `<div class="kv"><b>${k}</b> ${String(v)}</div>`;
+            metaRows.innerHTML =
+                kv("ideal_pop", metadata.ideal_pop) +
+                kv("root", metadata.root) +
+                kv("n_teams", metadata.n_teams) +
+                kv("epsilon", metadata.epsilon) +
+                kv("two_sided", metadata.two_sided) +
+                kv("tot_candidates", metadata.tot_candidates) +
+                kv("tot_pop", metadata.tot_pop);
+        }
+
+        // ---------- Tolerance logic ----------
+        function isWithinTolerance(n) {
+            if (!metadata || n.population == null) return false;
+            const P = Number(n.population);
+            const I = Number(metadata.ideal_pop);
+            const eps = Number(metadata.epsilon);
+            // true if for k=1 or k=2: |P - k*I| <= I*k*eps
+            for (const k of [1, 2]) {
+                const lhs = Math.abs(P - k * I);
+                const rhs = I * k * eps;
+                if (lhs <= rhs) return true;
+            }
+            return false;
+        }
+
+        // ---------- Fit view ----------
+        function autoCenterAndScale() {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+            if (nodes.length) {
+                const nx = nodes.map(n => n.x), ny = nodes.map(n => n.y);
+                minX = Math.min(minX, Math.min(...nx));
+                minY = Math.min(minY, Math.min(...ny));
+                maxX = Math.max(maxX, Math.max(...nx));
+                maxY = Math.max(maxY, Math.max(...ny));
+            }
+            if (blocksBounds) {
+                minX = Math.min(minX, blocksBounds[0]);
+                minY = Math.min(minY, blocksBounds[1]);
+                maxX = Math.max(maxX, blocksBounds[2]);
+                maxY = Math.max(maxY, blocksBounds[3]);
+            }
+
+            if (!(minX < maxX && minY < maxY)) {
+                console.warn("Nothing to fit (no bounds).");
+                return;
+            }
+
+            const padding = 40;
+            const width = Math.max(1e-9, maxX - minX);
+            const height = Math.max(1e-9, maxY - minY);
+            const scaleX = (canvas.width - 2 * padding) / width;
+            const scaleY = (canvas.height - 2 * padding) / height;
+            const scale = Math.min(scaleX, scaleY);
+
+            center = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+            transform.k = scale;
+            transform.x = padding + (canvas.width - scale * (minX + maxX)) / 2;
+            transform.y = padding + (canvas.height - scale * (minY + maxY)) / 2;
+            transform.angle = 0;
+            initialTransform = { ...transform };
+        }
+
+        // ---------- Drawing ----------
+        function drawStarPath(context, x, y, rOuter = 3, spikes = 5, inset = 0.5) {
+            // simple star path for root marker (sizes will be scaled by transform)
+            const rot = Math.PI / 2 * 3;
+            let cx = x, cy = y;
+            let step = Math.PI / spikes;
+            context.beginPath();
+            context.moveTo(cx, cy - rOuter);
+            let rotA = rot;
+            for (let i = 0; i < spikes; i++) {
+                context.lineTo(
+                    cx + Math.cos(rotA) * rOuter,
+                    cy + Math.sin(rotA) * rOuter
+                );
+                rotA += step;
+                context.lineTo(
+                    cx + Math.cos(rotA) * (rOuter * inset),
+                    cy + Math.sin(rotA) * (rOuter * inset)
+                );
+                rotA += step;
+            }
+            context.closePath();
+        }
+
+        function draw() {
+            ctx.save();
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.translate(transform.x, transform.y);
+            ctx.scale(transform.k, transform.k);
+            ctx.translate(center.x, center.y);
+            ctx.rotate(transform.angle);
+            if (flipX) ctx.scale(-1, 1);          // mirror horizontally about center
+            ctx.translate(-center.x, -center.y);
+
+            // Blocks
+            if (blocksVisible && blocksPaths.length) {
+                ctx.fillStyle = "rgba(60,60,60,0.35)";
+                ctx.strokeStyle = "rgba(100,100,100,0.6)";
+                ctx.lineWidth = 0.5 / transform.k;
+                for (const p of blocksPaths) { ctx.fill(p); ctx.stroke(p); }
+            }
+
+            // Edges
+            if (links.length) {
+                ctx.strokeStyle = "rgba(255,255,255,0.85)";
+                ctx.lineWidth = 0.7 / transform.k;
+                ctx.beginPath();
+                for (const e of links) {
+                    const s = nodesById[e.source], t = nodesById[e.target];
+                    if (!s || !t) continue;
+                    ctx.moveTo(s.x, s.y);
+                    ctx.lineTo(t.x, t.y);
+                }
+                ctx.stroke();
+            }
+
+            // Nodes
+            if (nodes.length) {
+                const r = 1.8 / transform.k;  // base radius
+
+                for (const n of nodes) {
+                    const isRoot = (n.id === rootId);
+                    const green = isWithinTolerance(n);
+
+                    if (isRoot) {
+                        const R = STYLE.rootOuterPx / transform.k;   // star size scales with zoom
+                        drawStarPath(ctx, n.x, n.y, R, 5, STYLE.rootInset);
+
+                        // optional: a subtle halo behind the star
+                        if (STYLE.haloPx > 0) {
+                            ctx.save();
+                            ctx.strokeStyle = "rgba(255,255,255,0.6)";
+                            ctx.lineWidth = STYLE.haloPx / transform.k;
+                            ctx.stroke();
+                            ctx.restore();
+                        }
+
+                        ctx.fillStyle = "#ffd54f";                   // star fill
+                        ctx.strokeStyle = "#333";                    // star edge
+                        ctx.lineWidth = 1.4 / transform.k;
+                        ctx.fill();
+                        ctx.stroke();
+                        continue; // move to next node
+                    }
+
+                    else {
+                        // Non-root nodes
+                        const r = STYLE.nodeRadiusPx / transform.k;
+
+                        // optional halo
+                        if (STYLE.haloPx > 0) {
+                            ctx.beginPath();
+                            ctx.arc(n.x, n.y, r + STYLE.haloPx / transform.k, 0, Math.PI * 2);
+                            ctx.strokeStyle = "rgba(255,255,255,0.5)";
+                            ctx.lineWidth = STYLE.haloPx / transform.k;
+                            ctx.stroke();
+                        }
+
+                        // fill
+                        ctx.beginPath();
+                        ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+                        const isGreen = isWithinTolerance(n);
+                        ctx.fillStyle = isGreen ? STYLE.greenFill : STYLE.redFill;
+                        ctx.fill();
+
+                        if (isGreen) {
+                            ctx.strokeStyle = STYLE.greenStroke;          // e.g., white
+                            ctx.lineWidth = STYLE.nodeStrokePx / transform.k;
+                            ctx.stroke();
+                        }
+
+                    }
+                }
+            }
+
+            ctx.restore();
+        }
+
+        // ---------- Hit testing / interactions ----------
+        function getMousePos(evt) {
+            const rect = canvas.getBoundingClientRect();
+            const x = (evt.clientX - rect.left - transform.x) / transform.k;
+            const y = (evt.clientY - rect.top - transform.y) / transform.k;
+            const dx = x - center.x, dy = y - center.y;
+            const cos = Math.cos(-transform.angle), sin = Math.sin(-transform.angle);
+            let rx = dx * cos - dy * sin + center.x;
+            let ry = dx * sin + dy * cos + center.y;
+            if (flipX) rx = 2 * center.x - rx;     // undo the horizontal flip
+            return { x: rx, y: ry };
+        }
+        function findNearestNode(mousePos) {
+            let nearest = null, minDist = 5 / transform.k;
+            for (const n of nodes) {
+                const d = Math.hypot(n.x - mousePos.x, n.y - mousePos.y);
+                if (d < minDist) { minDist = d; nearest = n; }
+            }
+            return nearest;
+        }
+
+        let isDragging = false, dragStart = null;
+        canvas.addEventListener("mousedown", e => { isDragging = true; dragStart = { x: e.clientX, y: e.clientY }; });
+        canvas.addEventListener("mousemove", e => {
+            if (isDragging) {
+                transform.x += e.clientX - dragStart.x;
+                transform.y += e.clientY - dragStart.y;
+                dragStart = { x: e.clientX, y: e.clientY };
+                draw();
+            } else {
+                const m = getMousePos(e);
+                const hit = findNearestNode(m);
+                if (hit) {
+                    tooltip.style.left = (e.pageX + 10) + "px";
+                    tooltip.style.top = (e.pageY + 10) + "px";
+                    tooltip.innerHTML = renderTooltip(hit);
+                    tooltip.style.display = "block";
+                } else {
+                    tooltip.style.display = "none";
+                }
+            }
+        });
+        canvas.addEventListener("mouseup", () => { isDragging = false; });
+        canvas.addEventListener("mouseleave", () => { isDragging = false; });
+        canvas.addEventListener("wheel", e => {
+            e.preventDefault();
+            const scale = e.deltaY < 0 ? 1.1 : 0.9;
+            const m = getMousePos(e);
+            transform.x -= m.x * (scale - 1) * transform.k;
+            transform.y -= m.y * (scale - 1) * transform.k;
+            transform.k *= scale;
+            draw();
+        }, { passive: false });
+
+        resetBtn.addEventListener("click", () => { if (initialTransform) { transform = { ...initialTransform }; draw(); } });
+        rotateLeftBtn.addEventListener("click", () => { transform.angle -= Math.PI / 18; draw(); });
+        rotateRightBtn.addEventListener("click", () => { transform.angle += Math.PI / 18; draw(); });
+        toggleBlocksBtn.addEventListener("click", () => { blocksVisible = !blocksVisible; draw(); });
+        flipXBtn.addEventListener("click", () => { flipX = !flipX; draw(); });
+
+        // ---------- Boot ----------
+        Promise.all([loadBlocks()]).then(() => {
+            return loadGraphAndProjectToCentroids();
+        }).then(() => {
+            resize();
+            autoCenterAndScale();
+            draw();
+        });
+    </script>
+</body>
+
+</html>
