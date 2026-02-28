@@ -173,7 +173,7 @@ def fetch_chicago_official() -> gpd.GeoDataFrame:
 # GOOGLE PLACES
 # ──────────────────────────────────────────────────────────────────────────────
 
-GOOGLE_API_KEY = "REMOVED"
+GOOGLE_API_KEY = "xxx"
 
 # Google Place types that indicate a hospital-level facility
 HOSPITAL_PLACE_TYPES = {"hospital"}
