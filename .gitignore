@@ -54,3 +54,8 @@ pnpm-debug.log*
 
 # Large data files (optional - uncomment if desired)
 js/data
+
+# Secrets
+key.md
+.env.local
+*.secret
