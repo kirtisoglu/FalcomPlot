@@ -1,8 +1,66 @@
 """
-Data fetching and caching logic for Chicago health facilities.
-Sources: OpenStreetMap, Chicago Data Portal, Google Places, HRSA (Health Centers + MUAs).
+healthcares.call_data
+=====================
+Data fetching and disk-caching for Chicago health facilities.
+
+.. note::
+    This module is scheduled to move to a separate data library.  It is kept
+    here during the pre-release phase of FalcomPlot.
+
+Sources
+-------
+- **OpenStreetMap** via *osmnx* – hospitals, clinics, doctor surgeries.
+- **Chicago Data Portal** – city-run neighborhood health clinics.
+- **Google Places API** – private primary care and urgent care providers.
+- **HRSA** – Federally Qualified Health Centers (FQHCs) and Medically
+  Underserved Areas (MUAs) from the HRSA national CSV downloads.
+
+Caching
+-------
+Every fetch function writes its result to ``healthcares/data/`` as a
+GeoJSON file on the first run.  Subsequent calls return the cached file
+immediately, skipping the network request.  Delete the corresponding
+``.geojson`` file to force a fresh fetch.
+
+Cache files
+~~~~~~~~~~~
+=====================================  ========================================
+File                                   Contents
+=====================================  ========================================
+``data/osm.geojson``                   OpenStreetMap facilities.
+``data/chicago_official.geojson``      Chicago Data Portal clinics.
+``data/google_places_cache.geojson``   Google Places results (pre-fetched).
+``data/hrsa_health_centers.geojson``   HRSA FQHC / Look-Alike sites.
+``data/hrsa_mua.geojson``              HRSA Medically Underserved Areas.
+``data/chicago.pkl``                   Chicago census-block GeoDataFrame.
+=====================================  ========================================
+
+Public API
+----------
+``load_data()``        – Load the Chicago boundary GeoDataFrame from disk.
+``fetch_all()``        – Combine all sources into one facilities GeoDataFrame.
+``fetch_osm()``        – OpenStreetMap fetch / cache.
+``fetch_chicago_official()`` – Chicago Data Portal fetch / cache.
+``fetch_google_places_all()`` – Google Places load + re-categorize from cache.
+``fetch_hrsa()``       – Combined HRSA health centers + MUAs.
+``fetch_hrsa_health_centers()`` – HRSA FQHC sites only.
+``fetch_hrsa_mua()``   – HRSA Medically Underserved Areas only.
+
+Category labels
+---------------
+Every row returned by a fetch function carries a ``"category"`` column whose
+value is one of the keys in ``plott.CATEGORIES``:
+
+- ``"Hospital – Public"``
+- ``"Hospital – Private / Non-profit"``
+- ``"Primary Care Center – Public (FQHC / CHC)"``
+- ``"Primary Care Center – Private / Non-profit"``
+- ``"Urgent Care / Walk-in Clinic"``
+- ``"HRSA – FQHC / Health Center"``
+- ``"HRSA – Medically Underserved Area"``
 """
 
+import os
 import pickle
 import json
 from pathlib import Path
@@ -71,7 +129,28 @@ def _sanitize_gdf(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def fetch_osm() -> gpd.GeoDataFrame:
-    """Fetch OSM data and preserve ALL raw tags."""
+    """Fetch OpenStreetMap health facilities for Chicago and cache to disk.
+
+    Queries OSM for features tagged with::
+
+        amenity    in [hospital, clinic, doctors]
+        healthcare in [hospital, centre, clinic, urgent_care]
+
+    Polygon and way geometries are projected to EPSG:3857, centroided, then
+    reprojected back to EPSG:4326, so every row is a ``Point``.
+
+    Each record is assigned a ``"category"`` value based on the ``amenity``
+    and ``healthcare`` tags and a public-operator keyword check
+    (:data:`PUBLIC_OPERATOR_KEYWORDS`).  All raw OSM tags are preserved as
+    additional columns.
+
+    Returns
+    -------
+    GeoDataFrame
+        EPSG:4326 point GeoDataFrame with columns: ``geometry``, ``category``,
+        ``source="OpenStreetMap"``, plus all original OSM tags.
+        Returns an empty GeoDataFrame on fetch failure.
+    """
     cache_file = DATA_DIR / "osm.geojson"
     if cache_file.exists():
         print(f"  [Cache] Loading OSM data from {cache_file.name} …", end=" ", flush=True)
@@ -130,7 +209,21 @@ def fetch_osm() -> gpd.GeoDataFrame:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def fetch_chicago_official() -> gpd.GeoDataFrame:
-    """Fetch Chicago Data Portal clinics and preserve EVERY original field."""
+    """Fetch Chicago Data Portal neighborhood health clinics and cache to disk.
+
+    Calls the Socrata endpoint ``mw69-m6xi`` (up to 10 000 rows).  All
+    original API fields are kept as columns.  Rows without a valid latitude /
+    longitude are dropped.
+
+    All records are assigned ``category = "Primary Care Center – Public
+    (FQHC / CHC)"`` and ``source = "Chicago Data Portal"``.
+
+    Returns
+    -------
+    GeoDataFrame
+        EPSG:4326 point GeoDataFrame.  Returns an empty GeoDataFrame on
+        network or parse failure.
+    """
     cache_file = DATA_DIR / "chicago_official.geojson"
     if cache_file.exists():
         print(f"  [Cache] Loading Chicago Official data from {cache_file.name} …", end=" ", flush=True)
@@ -173,7 +266,7 @@ def fetch_chicago_official() -> gpd.GeoDataFrame:
 # GOOGLE PLACES
 # ──────────────────────────────────────────────────────────────────────────────
 
-GOOGLE_API_KEY = "xxx"
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 
 # Google Place types that indicate a hospital-level facility
 HOSPITAL_PLACE_TYPES = {"hospital"}
@@ -245,7 +338,24 @@ def _categorize_google_place(name: str, types: list[str]) -> str | None:
 
 
 def fetch_google_places_all() -> gpd.GeoDataFrame:
-    """Load Google Places from cache (already downloaded) and apply improved categorization."""
+    """Load Google Places data from cache and apply category classification.
+
+    This function does **not** call the Google Places API.  It reads the
+    pre-downloaded cache at ``data/google_places_cache.geojson``, re-runs
+    :func:`_categorize_google_place` over every record, and drops entries
+    that do not map to a known category (dentists, pharmacies, parking lots,
+    etc.).
+
+    The ``types`` column is expected to be a Python-literal list string
+    (as stored by the original API fetch script) and is parsed with
+    ``ast.literal_eval``.
+
+    Returns
+    -------
+    GeoDataFrame
+        EPSG:4326 point GeoDataFrame with updated ``category`` values.
+        Returns an empty GeoDataFrame if the cache file is absent.
+    """
     cache_file = DATA_DIR / "google_places_cache.geojson"
     if not cache_file.exists():
         print("  [Google Places] No cache found – please run the API fetch manually.")
@@ -290,9 +400,28 @@ def fetch_google_places_all() -> gpd.GeoDataFrame:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def fetch_hrsa_health_centers() -> gpd.GeoDataFrame:
-    """
-    Fetch HRSA Health Center Service Delivery Sites (FQHCs + Look-Alikes) for Chicago.
-    Uses X/Y geocoding coordinates bundled in the CSV.
+    """Fetch HRSA Health Center Service Delivery Sites for Chicago and cache.
+
+    Downloads the national HRSA CSV
+    ``Health_Center_Service_Delivery_and_LookAlike_Sites.csv``, then filters
+    to Illinois → Chicago → active sites only.  Coordinates come from the
+    ``Geocoding Artifact Address Primary X/Y Coordinate`` columns already
+    present in the CSV (no external geocoding needed).
+
+    Each row is tagged with:
+
+    - ``category = "HRSA – FQHC / Health Center"``
+    - ``hrsa_subtype`` – ``"FQHC"`` or ``"FQHC Look-Alike"`` depending on the
+      ``Health Center Type`` field.
+    - ``source = "HRSA"``
+
+    All original CSV columns are preserved.
+
+    Returns
+    -------
+    GeoDataFrame
+        EPSG:4326 point GeoDataFrame.  Returns an empty GeoDataFrame on
+        network or parse failure.
     """
     cache_file = DATA_DIR / "hrsa_health_centers.geojson"
     if cache_file.exists():
@@ -384,12 +513,28 @@ def _fetch_cook_tract_centroids() -> dict[str, tuple[float, float]]:
 
 
 def fetch_hrsa_mua() -> gpd.GeoDataFrame:
-    """
-    Fetch HRSA Medically Underserved Areas for Cook County (Chicago area).
-    Since the CSV has census-tract IDs but no lat/lon, we geocode tracts
-    using the Census TIGER centroid service.
+    """Fetch HRSA Medically Underserved Areas for the Chicago area and cache.
 
-    Each MUA tract becomes one point marker carrying MUA metadata.
+    Downloads the national HRSA ``MUA_DET.csv``, filters to Cook County
+    Illinois active ("Designated") designations, then geocodes each census
+    tract to a point using the Census TIGER internal-point centroid service
+    (:func:`_fetch_cook_tract_centroids`).  Tracts outside the Chicago
+    bounding box (:data:`CHICAGO_BBOX`) are dropped.
+
+    Each MUA record is tagged with:
+
+    - ``category = "HRSA – Medically Underserved Area"``
+    - ``source = "HRSA"``
+    - ``mua_name`` – the ``MUA/P Service Area Name`` field.
+    - ``desig_type`` – the ``Designation Type`` field.
+    - ``population`` – designated or total resident civilian population.
+    - ``imu_score`` – Index of Medical Underservice score.
+
+    Returns
+    -------
+    GeoDataFrame
+        EPSG:4326 point GeoDataFrame, one row per MUA census tract.
+        Returns an empty GeoDataFrame on network or parse failure.
     """
     cache_file = DATA_DIR / "hrsa_mua.geojson"
     if cache_file.exists():
@@ -475,7 +620,18 @@ def fetch_hrsa_mua() -> gpd.GeoDataFrame:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def fetch_hrsa() -> gpd.GeoDataFrame:
-    """Combine HRSA Health Centers + MUAs into one GeoDataFrame."""
+    """Return all HRSA data as a single GeoDataFrame.
+
+    Convenience wrapper that calls :func:`fetch_hrsa_health_centers` and
+    :func:`fetch_hrsa_mua` and concatenates the results.  Each sub-call
+    handles its own caching independently.
+
+    Returns
+    -------
+    GeoDataFrame
+        Concatenation of health center and MUA records.  Returns an empty
+        GeoDataFrame if both sub-fetches fail.
+    """
     hc  = fetch_hrsa_health_centers()
     mua = fetch_hrsa_mua()
     frames = [f for f in [hc, mua] if not f.empty]
@@ -489,7 +645,25 @@ def fetch_hrsa() -> gpd.GeoDataFrame:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def fetch_all() -> gpd.GeoDataFrame:
-    """Combine all sources without de-duplication."""
+    """Combine all data sources into one facilities GeoDataFrame.
+
+    Calls every per-source fetch function, concatenates the results, clips to
+    :data:`CHICAGO_BBOX`, and resets the index.  No de-duplication is
+    performed; a facility that appears in multiple sources will have multiple
+    rows.
+
+    Source call order: HRSA → Chicago Data Portal → Google Places → OSM.
+
+    Returns
+    -------
+    GeoDataFrame
+        EPSG:4326 point GeoDataFrame ready to pass to :func:`plott.add_markers`.
+
+    Raises
+    ------
+    RuntimeError
+        If every source fetch returns an empty GeoDataFrame.
+    """
     osm    = fetch_osm()
     city   = fetch_chicago_official()
     hrsa   = fetch_hrsa()
@@ -504,6 +678,25 @@ def fetch_all() -> gpd.GeoDataFrame:
 
 
 def load_data() -> gpd.GeoDataFrame:
+    """Load the Chicago boundary GeoDataFrame from the pre-built pickle.
+
+    Reads ``data/chicago.pkl``, which is expected to contain a GeoDataFrame of
+    Chicago census-block polygons (or any polygon layer suitable as a boundary).
+    Re-projects to EPSG:4326 if necessary.
+
+    This GeoDataFrame is passed directly to :func:`plott.build_map` as the
+    ``boundary`` argument.
+
+    Returns
+    -------
+    GeoDataFrame
+        EPSG:4326 polygon GeoDataFrame of the Chicago boundary.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``data/chicago.pkl`` does not exist.
+    """
     pkl_path = DATA_DIR / "chicago.pkl"
     with open(pkl_path, "rb") as fh:
         chicago = pickle.load(fh)

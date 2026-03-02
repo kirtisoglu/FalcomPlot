@@ -1,27 +1,109 @@
 """
-Chicago Health Facilities Interactive Map
-=========================================
-Modular visualization: hover summaries, click popups, filter legend.
-Sources: OpenStreetMap · Chicago Data Portal · Google Places · HRSA
+healthcares.plott
+=================
+Builds interactive Leaflet maps from GeoDataFrames of any facility type.
+
+Public API
+----------
+Two separate functions cover the two steps of building a map:
+
+:func:`build_basemap`
+    Create a Leaflet basemap with an optional boundary polygon layer.
+    Returns a ``folium.Map`` with nothing else on it.
+
+:func:`add_markers`
+    Add ``CircleMarker`` layers to an existing map from a facilities
+    GeoDataFrame, together with an interactive filter legend and a
+    source/sub-type toggle panel.
+
+Typical usage
+-------------
+::
+
+    import plott
+
+    # 1. Basemap only
+    m = plott.build_basemap(boundary)
+
+    # 2. Basemap + markers in one go
+    m = plott.build_basemap(boundary)
+    plott.add_markers(m, facilities, categories=MY_CATEGORIES)
+
+    m.save("interactive_map.html")
+
+Defining categories
+-------------------
+Pass any ``dict[str, dict]`` as ``categories`` to :func:`add_markers`.
+Each key is the string that appears in the ``"category"`` column of your
+facilities GeoDataFrame.  Each value must have:
+
+===========  =================================================
+Key          Type / meaning
+===========  =================================================
+``color``    Hex color string used for the circle marker.
+``radius``   Integer pixel radius of the circle marker.
+``order``    Integer used to sort legend entries (ascending).
+===========  =================================================
+
+Example::
+
+    MY_CATEGORIES = {
+        "Library":        {"color": "#2196F3", "radius": 6, "order": 0},
+        "Community Center": {"color": "#4CAF50", "radius": 5, "order": 1},
+        "Police Station": {"color": "#F44336", "radius": 7, "order": 2},
+    }
+
+A default set of health-facility categories is provided as
+:data:`HEALTH_CATEGORIES` and used when no ``categories`` argument is given.
+
+GeoDataFrame contract for ``add_markers``
+-----------------------------------------
+``facilities`` must have at minimum:
+
+============  ===================================================================
+Column        Description
+============  ===================================================================
+``geometry``  Shapely ``Point`` in EPSG:4326 (lon/lat).
+``category``  Must match a key in the ``categories`` dict passed to the function.
+``source``    Data-source label shown in the filter legend (e.g. ``"HRSA"``).
+============  ===================================================================
+
+The following optional columns are consumed by the tooltip / popup builders.
+All *other* columns are displayed as a sorted key/value table in the popup.
+
+=================================  ============================================
+Column                             Used for
+=================================  ============================================
+``name`` / ``Site Name``           Facility display name.
+``mua_name``                       Fallback name for HRSA MUA records.
+``business_status``                Operational status (Google Places).
+``Site Status Description``        Operational status (HRSA).
+``icon``                           URL of a small icon shown in the tooltip.
+``photos``                         Raw Google Places photos list (stringified).
+``raw_types_str``                  Comma-separated Google place-type string.
+``amenity`` / ``healthcare``       OSM tags used for sub-type resolution.
+``services``                       Chicago Data Portal services field.
+``hrsa_subtype``                   ``"FQHC"`` or ``"FQHC Look-Alike"``.
+``desig_type``                     HRSA MUA designation type string.
+=================================  ============================================
+
+Constants
+---------
+:data:`HEALTH_CATEGORIES` – default category → style mapping for health facilities.
 """
 
-import webbrowser
 import json
-import ast
 import re
-from pathlib import Path
 import folium
 import geopandas as gpd
 import numpy as np
 
-import call_data
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CATEGORY DEFINITIONS
+# DEFAULT CATEGORY DEFINITIONS  (health facilities)
 # ──────────────────────────────────────────────────────────────────────────────
 
-CATEGORIES = {
-    # ── Standard facility categories (all sources) ──
+HEALTH_CATEGORIES: dict[str, dict] = {
     "Hospital – Public": {
         "color":  "#E63946",
         "radius": 7,
@@ -47,7 +129,6 @@ CATEGORIES = {
         "radius": 4,
         "order":  4,
     },
-    # ── HRSA-specific categories ──
     "HRSA – FQHC / Health Center": {
         "color":  "#6A0572",
         "radius": 6,
@@ -60,11 +141,15 @@ CATEGORIES = {
     },
 }
 
+# Keep the old name as an alias so existing code doesn't break.
+CATEGORIES = HEALTH_CATEGORIES
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # VALUE HELPER
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _val(row, key):
+def _val(row: dict, key: str) -> str | None:
     """Safely retrieve a non-empty, non-NaN string value from a row dict."""
     try:
         v = row.get(key, None)
@@ -94,31 +179,30 @@ def _build_header_html(name: str, icon: str | None, color: str = "#e63946") -> s
     )
 
 
-def _build_photo_html(row) -> str:
+def _build_photo_html(row: dict, google_api_key: str) -> str:
     """Return an <img> block if a Google Places photo reference is present."""
     photos_raw = row.get("photos", None)
     if not (photos_raw and isinstance(photos_raw, str) and "photo_reference" in photos_raw):
         return ""
     match = re.search(r"'photo_reference':\s*'([^']+)'", photos_raw) or \
             re.search(r'"photo_reference":\s*"([^"]+)"', photos_raw)
-    if not match:
+    if not match or not google_api_key:
         return ""
     ref = match.group(1)
     url = (f"https://maps.googleapis.com/maps/api/place/photo"
-           f"?maxwidth=400&photoreference={ref}&key={call_data.GOOGLE_API_KEY}")
+           f"?maxwidth=400&photoreference={ref}&key={google_api_key}")
     return (f'<div style="text-align:center;margin-bottom:15px;">'
             f'<img src="{url}" style="max-width:100%;border-radius:8px;'
             f'box-shadow:0 2px 8px rgba(0,0,0,0.1);"></div>')
 
 
-def _build_table_html(row, exclusions: set) -> str:
+def _build_table_html(row: dict, exclusions: set) -> str:
     """Build a two-column key/value table from row fields."""
     rows_html = ""
     for k in sorted(row.keys()):
         if k in exclusions:
             continue
-        v = row[k]
-        val_str = str(v).strip()
+        val_str = str(row[k]).strip()
         if not val_str or val_str.lower() in ("nan", "none", ""):
             continue
         display_val = val_str if len(val_str) < 150 else val_str[:147] + "…"
@@ -132,12 +216,28 @@ def _build_table_html(row, exclusions: set) -> str:
     return f'<table style="width:100%;border-collapse:collapse;">{rows_html}</table>'
 
 
-def format_hover_summary(row) -> str:
-    """Concise HTML for the mouse-over tooltip."""
-    name   = _val(row, "name") or _val(row, "Site Name") or _val(row, "mua_name") or "Unknown Facility"
+def format_hover_summary(row: dict) -> str:
+    """Return compact HTML for the mouse-over tooltip.
+
+    Renders a small card with the facility name, operational status, and
+    category label.  An icon ``<img>`` is prepended when the row contains an
+    ``icon`` URL (Google Places records).
+
+    Parameters
+    ----------
+    row:
+        A single facility record as a plain ``dict`` (i.e. one row of the
+        facilities GeoDataFrame converted with ``dict(row)``).
+
+    Returns
+    -------
+    str
+        Self-contained HTML fragment suitable for ``folium.Tooltip``.
+    """
+    name   = _val(row, "name") or _val(row, "Site Name") or _val(row, "mua_name") or "Unknown"
     status = _val(row, "business_status") or _val(row, "Site Status Description") or "Active"
     icon   = _val(row, "icon")
-    cat    = _val(row, "category") or "Health Facility"
+    cat    = _val(row, "category") or "Facility"
 
     icon_html = (f'<img src="{icon}" style="width:16px;height:16px;'
                  f'margin-right:8px;vertical-align:middle;">') if icon else ""
@@ -150,20 +250,44 @@ def format_hover_summary(row) -> str:
     </div>"""
 
 
-def format_full_raw_popup(row) -> str:
-    """Full-detail click popup with header, optional photo, and key/value table."""
+def format_full_raw_popup(row: dict, google_api_key: str = "") -> str:
+    """Return full-detail HTML for the click popup.
+
+    Renders a scrollable card with:
+
+    1. A colored header bar showing the facility name and optional icon.
+    2. A photo pulled from the Google Places Photos API (only when
+       ``source == "Google Places"`` and ``google_api_key`` is provided).
+    3. A two-column key/value table of every non-empty field not in the
+       internal exclusion set for that source.
+
+    Source-specific fields that are redundant or administrative are
+    automatically hidden (e.g. FIPS codes, congressional district IDs,
+    internal HRSA surrogate keys).
+
+    Parameters
+    ----------
+    row:
+        A single facility record as a plain ``dict``.
+    google_api_key:
+        Google Places API key used to construct the photo URL.
+        Omit (or pass ``""``) to skip photo loading.
+
+    Returns
+    -------
+    str
+        Self-contained HTML fragment suitable for ``folium.Popup``.
+    """
     src  = _val(row, "source")
     name = (_val(row, "name") or _val(row, "Site Name") or
-            _val(row, "mua_name") or "Facility Details")
+            _val(row, "mua_name") or "Details")
     icon = _val(row, "icon")
 
-    # Fields to hide from the table
     exclusions = {"geometry"}
     if src == "Google Places":
         exclusions |= {"scope", "icon", "icon_background_color",
                        "icon_mask_base_uri", "name", "reference"}
     if src == "HRSA":
-        # Drop FIPS / region codes / date duplicates / border flags / unnamed cols
         exclusions |= {
             "State FIPS Code", "State Name", "State Abbreviation",
             "State and County Federal Information Processing Standard Code",
@@ -177,7 +301,6 @@ def format_full_raw_popup(row) -> str:
             "Common State County FIPS Code", "Common County Name",
             "U.S. - Mexico Border 100 Kilometer Indicator",
             "U.S. - Mexico Border County Indicator",
-            "U.S. - Mexico Border 100 Kilometer Indicator",
             "Rural Status Code",
             "MUA/P Status Code", "MUA/P Update Date", "MUA/P Update Date String",
             "MUA/P Designation Date String", "Break in Designation",
@@ -188,7 +311,6 @@ def format_full_raw_popup(row) -> str:
             "Medically Underserved Area/Population (MUA/P) Withdrawal Date in Text Format",
             "Data Warehouse Record Create Date",
             "Unnamed: 64", "Unnamed: 55",
-            # Health Center duplicates
             "Site State Abbreviation", "State FIPS and Congressional District Number Code",
             "Congressional District Number", "Congressional District Name",
             "Congressional District Code", "U.S. Congressional Representative Name",
@@ -203,9 +325,9 @@ def format_full_raw_popup(row) -> str:
             "BHCMIS Organization Identification Number",
         }
 
-    header  = _build_header_html(name, icon)
-    photo   = _build_photo_html(row) if src == "Google Places" else ""
-    table   = _build_table_html(row, exclusions)
+    header = _build_header_html(name, icon)
+    photo  = _build_photo_html(row, google_api_key) if src == "Google Places" else ""
+    table  = _build_table_html(row, exclusions)
 
     return f"""
     <div style="font-family:'Segoe UI',Tahoma,sans-serif;min-width:300px;
@@ -220,13 +342,13 @@ def format_full_raw_popup(row) -> str:
 # SUB-TYPE RESOLVER
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _resolve_subtype(row) -> str:
+def _resolve_subtype(row: dict) -> str:
     """Determine the legend sub-type label for a feature row."""
     src = row.get("source", "")
     cat = row.get("category", "")
 
     if src == "OpenStreetMap":
-        return _val(row, "amenity") or _val(row, "healthcare") or "Health Facility"
+        return _val(row, "amenity") or _val(row, "healthcare") or "Facility"
 
     if src == "Chicago Data Portal":
         desc = _val(row, "services") or ""
@@ -240,40 +362,41 @@ def _resolve_subtype(row) -> str:
                         if t not in ("point of interest", "establishment", "health")]
             if filtered:
                 return filtered[0]
-        return "Medical Provider"
+        return "Provider"
 
     if src == "HRSA":
         if cat == "HRSA – Medically Underserved Area":
             return _val(row, "desig_type") or "Medically Underserved Area"
         return _val(row, "hrsa_subtype") or "FQHC"
 
-    return "Health Facility"
+    # Generic fallback: use the category label itself as the sub-type
+    return cat or "Facility"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # LEGEND & JAVASCRIPT
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _build_legend_html(unique_sources: list[str]) -> str:
+def _build_legend_html(unique_sources: list[str], default_source: str) -> str:
     """Return the HTML for the filter panel (data-source selector + sub-type list)."""
     src_opts = "".join(
-        f'<option value="{s}" {"selected" if s == "Google Places" else ""}>{s}</option>'
+        f'<option value="{s}" {"selected" if s == default_source else ""}>{s}</option>'
         for s in unique_sources
     )
     return f"""
-    <div id="health-legend" style="position:fixed;bottom:40px;left:20px;z-index:900;
+    <div id="fp-legend" style="position:fixed;bottom:40px;left:20px;z-index:900;
          background:white;padding:15px;border-radius:12px;
          box-shadow:0 10px 25px rgba(0,0,0,0.1);
          font-family:sans-serif;min-width:280px;">
       <div style="font-weight:bold;border-bottom:2px solid #e63946;margin-bottom:10px;">
-        Filter Facilities
+        Filter
       </div>
-      <div style="font-size:10px;color:#999;margin-bottom:5px;">DATA SOURCE</div>
-      <select id="src-select" style="width:100%;margin-bottom:15px;"
-              onchange="updateLegend()">{src_opts}</select>
-      <div style="font-size:10px;color:#999;margin-bottom:5px;">SUB-TYPES</div>
-      <div id="dynamic-cat-list" style="max-height:200px;overflow-y:auto;"></div>
-      <div id="total-summary" style="margin-top:10px;font-size:11px;color:#666;
+      <div style="font-size:10px;color:#999;margin-bottom:5px;">SOURCE</div>
+      <select id="fp-src-select" style="width:100%;margin-bottom:15px;"
+              onchange="fpUpdateLegend()">{src_opts}</select>
+      <div style="font-size:10px;color:#999;margin-bottom:5px;">TYPES</div>
+      <div id="fp-cat-list" style="max-height:200px;overflow-y:auto;"></div>
+      <div id="fp-summary" style="margin-top:10px;font-size:11px;color:#666;
            text-align:right;"></div>
     </div>"""
 
@@ -283,11 +406,10 @@ def _build_filter_js(marker_data: list[dict]) -> str:
     return f"""
     <script>
     (function() {{
-        var markers = {json.dumps(marker_data)};
-        var disabled = new Set();
+        var fpMarkers = {json.dumps(marker_data)};
+        var fpDisabled = new Set();
 
         setTimeout(function() {{
-            // Find the Leaflet map instance
             var mapObj = null;
             for (var k in window) {{
                 if (k.startsWith('map_') && window[k] instanceof L.Map) {{
@@ -296,19 +418,18 @@ def _build_filter_js(marker_data: list[dict]) -> str:
             }}
             if (!mapObj) return;
 
-            // Index Leaflet layer objects by marker id
-            window.layers = {{}};
-            markers.forEach(m => {{ if (window[m.id]) window.layers[m.id] = window[m.id]; }});
+            window.fpLayers = {{}};
+            fpMarkers.forEach(m => {{ if (window[m.id]) window.fpLayers[m.id] = window[m.id]; }});
 
-            window.toggleType = function(t) {{
-                if (disabled.has(t)) disabled.delete(t); else disabled.add(t);
-                applyFilters();
+            window.fpToggleType = function(t) {{
+                if (fpDisabled.has(t)) fpDisabled.delete(t); else fpDisabled.add(t);
+                fpApplyFilters();
             }};
 
-            window.updateLegend = function() {{
-                var src = document.getElementById('src-select').value;
+            window.fpUpdateLegend = function() {{
+                var src = document.getElementById('fp-src-select').value;
                 var tm = {{}}, pool = [];
-                markers.forEach(m => {{
+                fpMarkers.forEach(m => {{
                     if (m.src === src) {{
                         if (!tm[m.type]) {{ tm[m.type] = {{ c: 0, col: m.color }}; pool.push(m.type); }}
                         tm[m.type].c++;
@@ -316,81 +437,175 @@ def _build_filter_js(marker_data: list[dict]) -> str:
                 }});
                 var html = "";
                 pool.sort().forEach(t => {{
-                    var off = disabled.has(t);
+                    var off = fpDisabled.has(t);
                     html += `<div style="display:flex;align-items:center;margin:3px 0;
                               cursor:pointer;opacity:${{off ? 0.4 : 1}}"
-                              onclick="toggleType('${{t}}')">
+                              onclick="fpToggleType('${{t}}')">
                       <span style="width:8px;height:8px;border-radius:50%;
                             background:${{tm[t].col}};margin-right:8px;"></span>
                       <span style="font-size:11px;flex:1">${{t}}</span>
                       <span style="font-size:10px;color:#999">${{tm[t].c}}</span>
                     </div>`;
                 }});
-                document.getElementById('dynamic-cat-list').innerHTML = html;
-                applyFilters();
+                document.getElementById('fp-cat-list').innerHTML = html;
+                fpApplyFilters();
             }};
 
-            window.applyFilters = function() {{
-                var src = document.getElementById('src-select').value;
+            window.fpApplyFilters = function() {{
+                var src = document.getElementById('fp-src-select').value;
                 var count = 0;
-                markers.forEach(m => {{
-                    var l = window.layers[m.id]; if (!l) return;
-                    var visible = (m.src === src && !disabled.has(m.type));
+                fpMarkers.forEach(m => {{
+                    var l = window.fpLayers[m.id]; if (!l) return;
+                    var visible = (m.src === src && !fpDisabled.has(m.type));
                     if (visible) {{ if (!mapObj.hasLayer(l)) l.addTo(mapObj); count++; }}
                     else         {{ if (mapObj.hasLayer(l))  l.remove(); }}
                 }});
-                document.getElementById('total-summary').innerText = count + " visible";
+                document.getElementById('fp-summary').innerText = count + ' visible';
 
-                // Sync opacity of legend items
-                var items = document.getElementById('dynamic-cat-list').children;
+                var items = document.getElementById('fp-cat-list').children;
                 for (var i = 0; i < items.length; i++) {{
                     var m2 = items[i].getAttribute('onclick').match(/'([^']+)'/);
-                    if (m2) items[i].style.opacity = disabled.has(m2[1]) ? 0.4 : 1;
+                    if (m2) items[i].style.opacity = fpDisabled.has(m2[1]) ? 0.4 : 1;
                 }}
             }};
 
-            updateLegend();
+            fpUpdateLegend();
         }}, 1000);
     }})();
     </script>"""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# MAP BUILDER
+# PUBLIC API
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _add_city_boundary(m: folium.Map, chicago: gpd.GeoDataFrame) -> None:
+def build_basemap(
+    boundary: gpd.GeoDataFrame | None = None,
+    *,
+    center: tuple[float, float] = (41.8375, -87.6866),
+    zoom: int = 11,
+    tiles: str = "CartoDB Positron",
+) -> folium.Map:
+    """Create a Leaflet basemap, optionally with a boundary polygon layer.
+
+    Parameters
+    ----------
+    boundary:
+        GeoDataFrame of region boundary polygons.  When provided, the geometry
+        is dissolved into one shape and simplified (tolerance 0.002°), reducing
+        embedded GeoJSON from ~11 MB to ~3 KB.  Pass ``None`` to skip.
+    center:
+        ``(lat, lon)`` for the initial map viewport.
+    zoom:
+        Initial Leaflet zoom level (1–20).
+    tiles:
+        Folium tile layer name or URL template.  Default is CartoDB Positron.
+
+    Returns
+    -------
+    folium.Map
+        A bare map with the base tile layer and, if supplied, the boundary
+        polygon.  Pass this to :func:`add_markers` to add facility markers.
+
+    Examples
+    --------
+    ::
+
+        m = build_basemap(boundary, center=(41.84, -87.69), zoom=12)
+        m.save("basemap.html")
     """
-    Add a dissolved + simplified Chicago boundary layer to the map.
-    Dissolving 39k census blocks into one polygon first, then simplifying,
-    reduces the embedded GeoJSON from ~11 MB to ~3 KB.
-    """
-    boundary = chicago.dissolve().simplify(0.002)
-    folium.GeoJson(
-        boundary,
-        style_function=lambda _: {
-            "fillColor": "#dde4ec", "color": "#9aaabb",
-            "weight": 0.5, "fillOpacity": 0.25,
-        },
-    ).add_to(m)
+    m = folium.Map(location=list(center), zoom_start=zoom, tiles=tiles)
+
+    if boundary is not None and not boundary.empty:
+        simplified = boundary.dissolve().simplify(0.002)
+        folium.GeoJson(
+            simplified,
+            style_function=lambda _: {
+                "fillColor": "#dde4ec", "color": "#9aaabb",
+                "weight": 0.5, "fillOpacity": 0.25,
+            },
+        ).add_to(m)
+
+    return m
 
 
-def _add_markers(m: folium.Map, facilities: gpd.GeoDataFrame) -> list[dict]:
+def add_markers(
+    m: folium.Map,
+    facilities: gpd.GeoDataFrame,
+    *,
+    categories: dict[str, dict] | None = None,
+    default_source: str | None = None,
+    google_api_key: str = "",
+) -> folium.Map:
+    """Add facility markers and an interactive filter legend to a map.
+
+    Iterates ``facilities`` and places a ``CircleMarker`` for every row whose
+    ``"category"`` value is a key in ``categories``.  Rows with an empty or
+    unrecognised geometry are skipped.
+
+    A filter legend is injected into the map's HTML.  It lets users:
+
+    - Switch between data sources via a ``<select>`` dropdown.
+    - Toggle individual sub-types on/off by clicking color-coded rows.
+
+    The legend and JavaScript use the ``"fp-"`` prefix for all DOM IDs and
+    global function names to avoid collisions with other scripts.
+
+    Parameters
+    ----------
+    m:
+        A ``folium.Map`` instance, typically produced by :func:`build_basemap`.
+    facilities:
+        GeoDataFrame of facility points.  Required columns: ``geometry``,
+        ``category``, ``source``.  See module docstring for optional columns.
+    categories:
+        ``dict[str, dict]`` mapping each category label to a style dict with
+        keys ``color`` (hex string), ``radius`` (int), and ``order`` (int).
+        Rows whose ``"category"`` is not in this dict are silently skipped.
+        Defaults to :data:`HEALTH_CATEGORIES` when ``None``.
+    default_source:
+        The data-source label pre-selected in the filter legend on first load.
+        Defaults to the first source in alphabetical order when ``None``.
+    google_api_key:
+        Google Places API key forwarded to :func:`format_full_raw_popup` for
+        rendering place photos inside popups.  Leave empty to skip photos.
+
+    Returns
+    -------
+    folium.Map
+        The same ``m`` passed in, mutated in place with markers and the legend.
+
+    Raises
+    ------
+    KeyError
+        If ``facilities`` is missing the required ``"source"`` column.
+
+    Examples
+    --------
+    ::
+
+        CATEGORIES = {
+            "Library":    {"color": "#2196F3", "radius": 6, "order": 0},
+            "Park":       {"color": "#4CAF50", "radius": 5, "order": 1},
+        }
+
+        m = build_basemap(boundary)
+        add_markers(m, facilities, categories=CATEGORIES, default_source="Library")
+        m.save("interactive_map.html")
     """
-    Add CircleMarkers for every valid facility row.
-    Returns a list of dicts used for JavaScript-side filtering.
-    """
-    marker_data = []
+    cats = categories if categories is not None else HEALTH_CATEGORIES
+
+    marker_data: list[dict] = []
     for _, row in facilities.iterrows():
         cat = row.get("category", "")
-        cfg = CATEGORIES.get(cat)
+        cfg = cats.get(cat)
         if not cfg or not row.geometry or row.geometry.is_empty:
             continue
 
-        sub_type   = _resolve_subtype(row)
-        hover_html = format_hover_summary(row)
-        click_html = format_full_raw_popup(row)
-        src        = row.get("source", "")
+        row_dict   = dict(row)
+        sub_type   = _resolve_subtype(row_dict)
+        hover_html = format_hover_summary(row_dict)
+        click_html = format_full_raw_popup(row_dict, google_api_key)
 
         marker = folium.CircleMarker(
             location=[row.geometry.y, row.geometry.x],
@@ -406,54 +621,15 @@ def _add_markers(m: folium.Map, facilities: gpd.GeoDataFrame) -> list[dict]:
 
         marker_data.append({
             "id":    marker.get_name(),
-            "src":   src,
+            "src":   row.get("source", ""),
             "type":  sub_type,
             "color": cfg["color"],
         })
-    return marker_data
 
+    unique_sources = sorted(facilities["source"].dropna().unique())
+    src = default_source if default_source in unique_sources else unique_sources[0]
 
-def build_map(chicago: gpd.GeoDataFrame, facilities: gpd.GeoDataFrame) -> folium.Map:
-    """Assemble the full interactive Leaflet map."""
-    m = folium.Map(location=[41.8375, -87.6866], zoom_start=11, tiles="CartoDB Positron")
-
-    _add_city_boundary(m, chicago)
-
-    marker_data   = _add_markers(m, facilities)
-    unique_sources = sorted(facilities["source"].unique())
-
-    legend_html = _build_legend_html(unique_sources)
-    m.get_root().html.add_child(folium.Element(legend_html))
-
-    filter_js = _build_filter_js(marker_data)
-    m.get_root().html.add_child(folium.Element(filter_js))
+    m.get_root().html.add_child(folium.Element(_build_legend_html(unique_sources, src)))
+    m.get_root().html.add_child(folium.Element(_build_filter_js(marker_data)))
 
     return m
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# MAIN
-# ──────────────────────────────────────────────────────────────────────────────
-
-def main():
-    print("  Loading Chicago boundary …")
-    chicago = call_data.load_data()
-
-    print("  Fetching facility data …")
-    facilities = call_data.fetch_all()
-    print(f"  Total markers: {len(facilities)}")
-
-    # Category summary
-    for cat, grp in facilities.groupby("category"):
-        print(f"    {cat}: {len(grp)}")
-
-    print("  Building map …")
-    m = build_map(chicago, facilities)
-
-    output = Path(__file__).parent / "chicago_health_map.html"
-    m.save(str(output))
-    print(f"  ✓ Map saved → {output}  ({output.stat().st_size / 1024 / 1024:.1f} MB)")
-
-
-if __name__ == "__main__":
-    main()
