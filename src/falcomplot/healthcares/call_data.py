@@ -37,7 +37,7 @@ File                                   Contents
 
 Public API
 ----------
-``load_data()``        – Load the Chicago boundary GeoDataFrame from disk.
+``load_boundary(path)`` – Load any boundary GeoDataFrame from a file (defaults to bundled Chicago example).
 ``fetch_all()``        – Combine all sources into one facilities GeoDataFrame.
 ``fetch_osm()``        – OpenStreetMap fetch / cache.
 ``fetch_chicago_official()`` – Chicago Data Portal fetch / cache.
@@ -62,15 +62,12 @@ value is one of the keys in ``plott.CATEGORIES``:
 
 import os
 import pickle
-import json
 from pathlib import Path
-import time
 import requests
 import geopandas as gpd
 import pandas as pd
-import numpy as np
 import osmnx as ox
-from shapely.geometry import Point, box, MultiPolygon, Polygon
+from shapely.geometry import Point, box
 
 # ──────────────────────────────────────────────────────────────────────────────
 # DATA DIRECTORY
@@ -677,29 +674,73 @@ def fetch_all() -> gpd.GeoDataFrame:
     return combined.reset_index(drop=True)
 
 
-def load_data() -> gpd.GeoDataFrame:
-    """Load the Chicago boundary GeoDataFrame from the pre-built pickle.
+def load_boundary(path: str | Path | None = None) -> gpd.GeoDataFrame:
+    """Load a boundary polygon GeoDataFrame from disk.
 
-    Reads ``data/chicago.pkl``, which is expected to contain a GeoDataFrame of
-    Chicago census-block polygons (or any polygon layer suitable as a boundary).
-    Re-projects to EPSG:4326 if necessary.
+    Accepts any file format that GeoPandas can read (GeoJSON, Shapefile,
+    GeoPackage, FlatGeobuf, etc.) as well as pickle files (``.pkl``)
+    produced by GeoPandas or Pandas.
 
-    This GeoDataFrame is passed directly to :func:`plott.build_map` as the
-    ``boundary`` argument.
+    When called with no argument, loads the bundled Chicago census-block
+    example (``data/chicago.pkl``) so the module works out of the box.
+    Pass your own path for any other region.
+
+    Parameters
+    ----------
+    path:
+        Path to a boundary file.  Supported formats:
+
+        - ``*.pkl`` – GeoPandas pickle (fastest, preserves dtypes).
+        - ``*.geojson`` / ``*.json`` – GeoJSON.
+        - ``*.shp`` – Shapefile (the ``.shp`` file; sibling files must exist).
+        - ``*.gpkg`` – GeoPackage.
+        - Any other format supported by ``geopandas.read_file``.
+
+        Pass ``None`` to use the bundled Chicago example.
 
     Returns
     -------
     GeoDataFrame
-        EPSG:4326 polygon GeoDataFrame of the Chicago boundary.
+        EPSG:4326 polygon GeoDataFrame, re-projected if necessary.
 
     Raises
     ------
     FileNotFoundError
-        If ``data/chicago.pkl`` does not exist.
+        If the given path does not exist.
+    ValueError
+        If the file extension is not recognised.
+
+    Examples
+    --------
+    ::
+
+        # Use the bundled Chicago example
+        boundary = load_boundary()
+
+        # Your own GeoJSON
+        boundary = load_boundary("my_city/boundary.geojson")
+
+        # Your own GeoPandas pickle
+        boundary = load_boundary("my_city/census_blocks.pkl")
     """
-    pkl_path = DATA_DIR / "chicago.pkl"
-    with open(pkl_path, "rb") as fh:
-        chicago = pickle.load(fh)
-    if chicago.crs is None or chicago.crs.to_epsg() != 4326:
-        chicago = chicago.to_crs("EPSG:4326")
-    return chicago
+    if path is None:
+        path = DATA_DIR / "chicago.pkl"
+
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Boundary file not found: {path}")
+
+    if path.suffix == ".pkl":
+        with open(path, "rb") as fh:
+            gdf = pickle.load(fh)
+    elif path.suffix in {".geojson", ".json", ".shp", ".gpkg", ".fgb"}:
+        gdf = gpd.read_file(path)
+    else:
+        raise ValueError(
+            f"Unrecognised boundary file format: '{path.suffix}'. "
+            "Supported: .pkl, .geojson, .json, .shp, .gpkg, .fgb"
+        )
+
+    if gdf.crs is None or gdf.crs.to_epsg() != 4326:
+        gdf = gdf.to_crs("EPSG:4326")
+    return gdf

@@ -20,7 +20,7 @@ Quickstart
 
     from falcomplot.healthcares import plott, call_data
 
-    boundary   = call_data.load_data()
+    boundary   = call_data.load_boundary()   # bundled Chicago example; pass a path for your own data
     facilities = call_data.fetch_all()
 
     m = plott.build_basemap(boundary)
