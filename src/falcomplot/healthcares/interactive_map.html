@@ -51,7 +51,7 @@
   Run plott.py directly or call from Python::
 
       import plott, call_data
-      boundary   = call_data.load_data()
+      boundary   = call_data.load_boundary()
       facilities = call_data.fetch_all()
       m = plott.build_basemap(boundary)
       plott.add_markers(m, facilities)
