@@ -44,7 +44,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 falcomplot = [
     "web_assets/**/*",
-    "healthcares/data/*.geojson",
-    "healthcares/data/*.pkl",
-    "healthcares/interactive_map.html",
+    "mapping/data/*.geojson",
+    "mapping/data/*.pkl",
+    "mapping/interactive_map.html",
 ]

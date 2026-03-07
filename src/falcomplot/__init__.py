@@ -5,10 +5,9 @@ Interactive mapping and visualization tools for FalcomChain.
 
 Sub-packages
 ------------
-healthcares
-    Interactive Leaflet maps for health facility data.
-    Contains :mod:`~falcomplot.healthcares.plott` and
-    :mod:`~falcomplot.healthcares.call_data`.
+mapping
+    Interactive Leaflet maps for facility location data.
+    Use ``mapping.build_basemap()`` and ``mapping.add_markers()``.
 
 Functions
 ---------
@@ -17,7 +16,7 @@ animate(data_path, port=0, open_browser=True)
 """
 
 from .server import start_server
-from . import healthcares
+from . import mapping
 import os
 
 

@@ -1,5 +1,5 @@
 """
-healthcares.plott
+falcomplot.mapping.plott
 =================
 Builds interactive Leaflet maps from GeoDataFrames of any facility type.
 
