@@ -534,8 +534,8 @@ def build_basemap(
         folium.GeoJson(
             simplified,
             style_function=lambda _: {
-                "fillColor": "#dde4ec", "color": "#9aaabb",
-                "weight": 0.5, "fillOpacity": 0.25,
+                "fillColor": "#dde4ec", "color": "#7a8a9b",
+                "weight": 1.5, "fillOpacity": 0.25,
             },
         ).add_to(m)
 
