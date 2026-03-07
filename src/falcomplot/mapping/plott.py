@@ -495,8 +495,8 @@ def build_basemap(
     boundary:
         GeoDataFrame of region boundary polygons, or a path (``str`` /
         ``pathlib.Path``) to a boundary file (``.pkl``, ``.geojson``,
-        ``.shp``, ``.gpkg``, etc.).  When provided, the geometry is dissolved
-        into one shape and simplified (tolerance 0.002°).  Pass ``None`` to skip.
+        ``.shp``, ``.gpkg``, etc.).  Each polygon is rendered individually so
+        that census-block boundaries remain visible.  Pass ``None`` to skip.
     center:
         ``(lat, lon)`` for the initial map viewport.
     zoom:
@@ -530,9 +530,8 @@ def build_basemap(
             boundary = boundary.to_crs("EPSG:4326")
 
     if boundary is not None and not boundary.empty:
-        simplified = boundary.dissolve().simplify(0.002)
         folium.GeoJson(
-            simplified,
+            boundary,
             style_function=lambda _: {
                 "fillColor": "#dde4ec", "color": "#7a8a9b",
                 "weight": 1.5, "fillOpacity": 0.25,
