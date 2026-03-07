@@ -93,7 +93,9 @@ Constants
 """
 
 import json
+import pickle
 import re
+from pathlib import Path
 import folium
 import geopandas as gpd
 import numpy as np
@@ -480,7 +482,7 @@ def _build_filter_js(marker_data: list[dict]) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def build_basemap(
-    boundary: gpd.GeoDataFrame | None = None,
+    boundary: gpd.GeoDataFrame | str | Path | None = None,
     *,
     center: tuple[float, float] = (41.8375, -87.6866),
     zoom: int = 11,
@@ -491,9 +493,10 @@ def build_basemap(
     Parameters
     ----------
     boundary:
-        GeoDataFrame of region boundary polygons.  When provided, the geometry
-        is dissolved into one shape and simplified (tolerance 0.002°), reducing
-        embedded GeoJSON from ~11 MB to ~3 KB.  Pass ``None`` to skip.
+        GeoDataFrame of region boundary polygons, or a path (``str`` /
+        ``pathlib.Path``) to a boundary file (``.pkl``, ``.geojson``,
+        ``.shp``, ``.gpkg``, etc.).  When provided, the geometry is dissolved
+        into one shape and simplified (tolerance 0.002°).  Pass ``None`` to skip.
     center:
         ``(lat, lon)`` for the initial map viewport.
     zoom:
@@ -515,6 +518,16 @@ def build_basemap(
         m.save("basemap.html")
     """
     m = folium.Map(location=list(center), zoom_start=zoom, tiles=tiles)
+
+    if isinstance(boundary, (str, Path)):
+        p = Path(boundary)
+        if p.suffix == ".pkl":
+            with open(p, "rb") as fh:
+                boundary = pickle.load(fh)
+        else:
+            boundary = gpd.read_file(p)
+        if boundary.crs is None or boundary.crs.to_epsg() != 4326:
+            boundary = boundary.to_crs("EPSG:4326")
 
     if boundary is not None and not boundary.empty:
         simplified = boundary.dissolve().simplify(0.002)
