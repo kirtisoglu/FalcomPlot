@@ -66,7 +66,6 @@ from pathlib import Path
 import requests
 import geopandas as gpd
 import pandas as pd
-import osmnx as ox
 from shapely.geometry import Point, box
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -161,6 +160,7 @@ def fetch_osm() -> gpd.GeoDataFrame:
         "healthcare": ["hospital", "centre", "clinic", "urgent_care"],
     }
     try:
+        import osmnx as ox
         gdf = ox.features_from_place(PLACE, tags=tags)
     except Exception as exc:
         print(f"err: {exc}")
