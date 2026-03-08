@@ -533,10 +533,120 @@ def build_basemap(
         folium.GeoJson(
             boundary,
             style_function=lambda _: {
-                "fillColor": "#dde4ec", "color": "#7a8a9b",
-                "weight": 1.5, "fillOpacity": 0.25,
+                "fillColor": "#dde4ec", "color": "#4a5568",
+                "weight": 1.0, "fillOpacity": 0.15,
             },
         ).add_to(m)
+
+    return m
+
+
+def _load_geodata(data: gpd.GeoDataFrame | str | Path) -> gpd.GeoDataFrame:
+    """Load a GeoDataFrame from a path or return it directly."""
+    if isinstance(data, (str, Path)):
+        p = Path(data)
+        if p.suffix == ".pkl":
+            with open(p, "rb") as fh:
+                data = pickle.load(fh)
+        else:
+            data = gpd.read_file(p)
+    if data.crs is None or data.crs.to_epsg() != 4326:
+        data = data.to_crs("EPSG:4326")
+    return data
+
+
+def add_hierarchy(
+    m: folium.Map,
+    hierarchy: gpd.GeoDataFrame | str | Path | str = None,
+    *,
+    basemap_gdf: gpd.GeoDataFrame | None = None,
+    group_col: str | None = None,
+    color: str = "#e53e3e",
+    weight: float = 2.5,
+    dash_array: str = "6,4",
+    fill_opacity: float = 0.0,
+    tooltip_fields: list[str] | None = None,
+) -> folium.Map:
+    """Add a second-level geographic hierarchy on top of the basemap.
+
+    Parameters
+    ----------
+    m:
+        The folium Map returned by :func:`build_basemap`.
+    hierarchy:
+        One of:
+        - A GeoDataFrame with polygon geometries (the upper-level areas).
+        - A path (str / Path) to a GeoJSON, Shapefile, pickle, etc.
+        - A column name (str) present in *basemap_gdf*.  In this case, blocks
+          sharing the same value in that column are dissolved (merged) to form
+          the upper-level polygons.
+    basemap_gdf:
+        The block-level GeoDataFrame used in :func:`build_basemap`.  Required
+        only when *hierarchy* is a column name.
+    group_col:
+        Deprecated alias kept for clarity — pass the column name as
+        *hierarchy* directly instead.
+    color:
+        Stroke colour for the hierarchy boundaries.
+    weight:
+        Stroke width in pixels.
+    dash_array:
+        SVG dash-array string (e.g. ``"6,4"``).  Use ``""`` for solid lines.
+    fill_opacity:
+        Fill opacity for the hierarchy polygons (0 = transparent).
+    tooltip_fields:
+        Column names to show on hover.  Auto-detected when *hierarchy* is a
+        column name.
+
+    Returns
+    -------
+    folium.Map
+        The same map object, with the hierarchy layer added.
+    """
+    col = group_col  # support legacy kwarg
+
+    if isinstance(hierarchy, str) and not Path(hierarchy).exists():
+        # hierarchy is a column name
+        col = hierarchy
+        hierarchy = None
+
+    if col is not None:
+        if basemap_gdf is None:
+            raise ValueError(
+                "basemap_gdf is required when hierarchy is a column name"
+            )
+        gdf = basemap_gdf.copy()
+        if gdf.crs is None or gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs("EPSG:4326")
+        hierarchy = gdf.dissolve(by=col).reset_index()
+        if tooltip_fields is None:
+            tooltip_fields = [col]
+
+    if hierarchy is not None:
+        hierarchy = _load_geodata(hierarchy)
+
+    if hierarchy is None or hierarchy.empty:
+        return m
+
+    style = {
+        "fillColor": "transparent",
+        "color": color,
+        "weight": weight,
+        "dashArray": dash_array,
+        "fillOpacity": fill_opacity,
+    }
+
+    kwargs = {}
+    if tooltip_fields:
+        available = [f for f in tooltip_fields if f in hierarchy.columns]
+        if available:
+            kwargs["tooltip"] = folium.GeoJsonTooltip(fields=available)
+
+    folium.GeoJson(
+        hierarchy,
+        style_function=lambda _, s=style: s,
+        **kwargs,
+    ).add_to(m)
 
     return m
 

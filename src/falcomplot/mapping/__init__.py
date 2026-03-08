@@ -24,7 +24,7 @@ It will move to a separate data library in a future release::
     facilities = call_data.fetch_all()
 """
 
-from .plott import build_basemap, add_markers, HEALTH_CATEGORIES
+from .plott import build_basemap, add_hierarchy, add_markers, HEALTH_CATEGORIES
 from . import call_data
 
-__all__ = ["build_basemap", "add_markers", "HEALTH_CATEGORIES", "call_data"]
+__all__ = ["build_basemap", "add_hierarchy", "add_markers", "HEALTH_CATEGORIES", "call_data"]
