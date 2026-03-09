@@ -561,10 +561,11 @@ def add_hierarchy(
     *,
     basemap_gdf: gpd.GeoDataFrame | None = None,
     group_col: str | None = None,
-    color: str = "#e53e3e",
-    weight: float = 2.5,
-    dash_array: str = "6,4",
-    fill_opacity: float = 0.0,
+    color: str = "#ffffff",
+    weight: float = 2.0,
+    dash_array: str = "",
+    fill_color: str = "#4a90d9",
+    fill_opacity: float = 0.25,
     tooltip_fields: list[str] | None = None,
 ) -> folium.Map:
     """Add a second-level geographic hierarchy on top of the basemap.
@@ -587,13 +588,16 @@ def add_hierarchy(
         Deprecated alias kept for clarity — pass the column name as
         *hierarchy* directly instead.
     color:
-        Stroke colour for the hierarchy boundaries.
+        Stroke colour for the hierarchy boundaries.  Default is white ``"#ffffff"``.
     weight:
-        Stroke width in pixels.
+        Stroke width in pixels.  Default 2.0; increases to 4.0 on hover.
     dash_array:
-        SVG dash-array string (e.g. ``"6,4"``).  Use ``""`` for solid lines.
+        SVG dash-array string (e.g. ``"6,4"``).  Use ``""`` for solid lines (default).
+    fill_color:
+        Fill colour for hierarchy polygons.  Default is blue ``"#4a90d9"``.
     fill_opacity:
-        Fill opacity for the hierarchy polygons (0 = transparent).
+        Fill opacity for the hierarchy polygons (0 = transparent, default 0.25).
+        Increases by 0.15 on hover.
     tooltip_fields:
         Column names to show on hover.  Auto-detected when *hierarchy* is a
         column name.
@@ -629,11 +633,18 @@ def add_hierarchy(
         return m
 
     style = {
-        "fillColor": "transparent",
+        "fillColor": fill_color,
         "color": color,
         "weight": weight,
         "dashArray": dash_array,
         "fillOpacity": fill_opacity,
+    }
+    highlight = {
+        "fillColor": fill_color,
+        "color": "#ffffff",
+        "weight": 4.0,
+        "dashArray": "",
+        "fillOpacity": fill_opacity + 0.15,
     }
 
     kwargs = {}
@@ -645,6 +656,7 @@ def add_hierarchy(
     folium.GeoJson(
         hierarchy,
         style_function=lambda _, s=style: s,
+        highlight_function=lambda _, h=highlight: h,
         **kwargs,
     ).add_to(m)
 
@@ -658,6 +670,7 @@ def add_markers(
     categories: dict[str, dict] | None = None,
     default_source: str | None = None,
     google_api_key: str = "",
+    show_legend: bool = True,
 ) -> folium.Map:
     """Add facility markers and an interactive filter legend to a map.
 
@@ -691,6 +704,10 @@ def add_markers(
     google_api_key:
         Google Places API key forwarded to :func:`format_full_raw_popup` for
         rendering place photos inside popups.  Leave empty to skip photos.
+    show_legend:
+        Whether to inject the floating filter legend into the map HTML.
+        Set to ``False`` when the dashboard provides its own sidebar filter
+        (e.g. Panel dashboard) to avoid a duplicate floating panel.
 
     Returns
     -------
@@ -748,10 +765,10 @@ def add_markers(
             "color": cfg["color"],
         })
 
-    unique_sources = sorted(facilities["source"].dropna().unique())
-    src = default_source if default_source in unique_sources else unique_sources[0]
-
-    m.get_root().html.add_child(folium.Element(_build_legend_html(unique_sources, src)))
-    m.get_root().html.add_child(folium.Element(_build_filter_js(marker_data)))
+    if show_legend:
+        unique_sources = sorted(facilities["source"].dropna().unique())
+        src = default_source if default_source in unique_sources else unique_sources[0]
+        m.get_root().html.add_child(folium.Element(_build_legend_html(unique_sources, src)))
+        m.get_root().html.add_child(folium.Element(_build_filter_js(marker_data)))
 
     return m
