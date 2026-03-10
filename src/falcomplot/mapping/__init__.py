@@ -14,6 +14,6 @@ Quickstart
     m.save("interactive_map.html")
 """
 
-from .plott import build_basemap, add_hierarchy, add_markers, HEALTH_CATEGORIES
+from .plott import build_basemap, add_hierarchy, add_markers, add_choropleth, HEALTH_CATEGORIES
 
-__all__ = ["build_basemap", "add_hierarchy", "add_markers", "HEALTH_CATEGORIES"]
+__all__ = ["build_basemap", "add_hierarchy", "add_markers", "add_choropleth", "HEALTH_CATEGORIES"]

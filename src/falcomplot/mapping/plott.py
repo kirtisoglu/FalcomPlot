@@ -97,6 +97,8 @@ import pickle
 import re
 from pathlib import Path
 import folium
+import folium.plugins
+import branca.colormap as cm
 import geopandas as gpd
 import numpy as np
 
@@ -660,6 +662,91 @@ def add_hierarchy(
         **kwargs,
     ).add_to(m)
 
+    return m
+
+
+def add_choropleth(
+    m: folium.Map,
+    gdf: gpd.GeoDataFrame,
+    column: str,
+    *,
+    label: str | None = None,
+    palette: str = "YlOrRd",
+    n_colors: int = 6,
+    nan_fill: str = "#d0d0d0",
+    tooltip_fields: list[str] | None = None,
+) -> folium.Map:
+    """Overlay a choropleth (colour-coded polygon) layer on an existing map.
+
+    Parameters
+    ----------
+    m :
+        The ``folium.Map`` to add the choropleth to.
+    gdf :
+        GeoDataFrame with polygon geometries and at least the *column* to map.
+        Must be in EPSG:4326 (or auto-converted).
+    column :
+        Name of the numeric column to visualise.
+    label :
+        Legend / tooltip title.  Defaults to *column*.
+    palette :
+        Branca colour-map name (e.g. ``"YlOrRd"``, ``"Blues"``, ``"RdYlGn"``).
+    n_colors :
+        Number of discrete colour steps in the legend.
+    nan_fill :
+        CSS colour used for features with a missing value.
+    tooltip_fields :
+        Extra columns to show in the hover tooltip (in addition to *column*).
+
+    Returns
+    -------
+    folium.Map
+        The same *m*, with the choropleth layer and a colour-bar legend added.
+    """
+    if gdf.crs is None or gdf.crs.to_epsg() != 4326:
+        gdf = gdf.to_crs("EPSG:4326")
+
+    label = label or column
+    series = gdf[column].dropna()
+
+    if series.empty:
+        return m
+
+    vmin, vmax = float(series.min()), float(series.max())
+
+    palette_key = f"{palette}_{n_colors:02d}"
+    colormap = getattr(cm.linear, palette_key, cm.linear.YlOrRd_06).scale(vmin, vmax)
+    colormap.caption = label
+
+    def _style(feature):
+        val = feature["properties"].get(column)
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return {"fillColor": nan_fill, "color": "#888", "weight": 0.5, "fillOpacity": 0.6}
+        return {
+            "fillColor": colormap(val),
+            "color": "#555",
+            "weight": 0.8,
+            "fillOpacity": 0.75,
+        }
+
+    def _highlight(feature):
+        return {"weight": 2.5, "color": "#222", "fillOpacity": 0.9}
+
+    fields = [column] + [f for f in (tooltip_fields or []) if f != column and f in gdf.columns]
+    available_fields = [f for f in fields if f in gdf.columns]
+    tooltip_kwargs = (
+        {"tooltip": folium.GeoJsonTooltip(fields=available_fields, aliases=[label] + available_fields[1:])}
+        if available_fields else {}
+    )
+
+    folium.GeoJson(
+        gdf,
+        style_function=_style,
+        highlight_function=_highlight,
+        **tooltip_kwargs,
+    ).add_to(m)
+
+    colormap.add_to(m)
     return m
 
 
