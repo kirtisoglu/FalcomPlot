@@ -47,12 +47,16 @@ export class ViewManager {
         const height = Math.max(1e-9, maxY - minY);
         const scaleX = (this.canvas.width - 2 * padding) / width;
         const scaleY = (this.canvas.height - 2 * padding) / height;
-        const scale = Math.min(scaleX, scaleY);
+        // Zoom-out factor: start with breathing room around the grid
+        const zoomOutFactor = 0.65;
+        const scale = Math.min(scaleX, scaleY) * zoomOutFactor;
 
         state.center = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
         state.transform.k = scale;
-        state.transform.x = padding + (this.canvas.width - scale * (minX + maxX)) / 2;
-        state.transform.y = padding + (this.canvas.height - scale * (minY + maxY)) / 2;
+        // Center in the full canvas, then shift slightly left to avoid the sidebar
+        const leftShift = 150;
+        state.transform.x = (this.canvas.width - scale * (minX + maxX)) / 2 - leftShift;
+        state.transform.y = (this.canvas.height - scale * (minY + maxY)) / 2;
         state.transform.angle = 0;
         state.initialTransform = { ...state.transform };
 

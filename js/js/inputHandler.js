@@ -39,9 +39,14 @@ export class InputHandler {
                 <div><b>Degree</b> ${degree}</div>
                 <div><b>Population:</b> ${pop} <span style="padding:1px 6px;border-radius:999px;background:#eee;font-size:11px;">${within}</span></div>
                 <hr style="border: none; border-top: 1px solid #ddd; margin: 6px 0;">
-                <div><b>Has Facility:</b> ${node.has_facility ? "✓" : "✗"}</div>
-                <div><b>Compl. Facility:</b> ${node.compl_facility ? "✓" : "✗"}</div>
-                <div><b>Candidate:</b> ${node.candidate ? "✓" : "✗"}</div>
+                <div><b>Candidate:</b> ${(node.is_candidate || node.candidate) ? "✓" : "✗"}</div>
+                <div><b>Accumulated demand:</b> ${node.demand ?? "—"}</div>
+                <hr style="border: none; border-top: 1px solid #ddd; margin: 6px 0;">
+                <div><b>Side:</b> ${node.side || "—"}</div>
+                <div><b>Demand balanced:</b> ${node.demand_ok ? "✓" : "✗"}</div>
+                <div><b>Has facility:</b> ${node.has_facility ? "✓" : "✗"}</div>
+                <div><b>Complement balanced:</b> ${node.compl_demand_ok ? "✓" : "✗"}</div>
+                <div><b>Complement has facility:</b> ${node.compl_facility ? "✓" : "✗"}</div>
                 ${districtInfo}
             </div>
         `;

@@ -1,58 +1,77 @@
 // Import all modules
 import { CONFIG, VISUAL } from './js/config.js';
 import { Logger } from './js/logger.js';
-import { DataLoader } from './js/dataLoader.js?v=4'; // Final button changes
+import { DataLoader } from './js/dataLoader.js';
 import { Renderer } from './js/renderer.js';
 import { ToleranceChecker } from './js/toleranceChecker.js';
 import { ViewManager } from './js/viewManager.js';
-import { InputHandler } from './js/inputHandler.js?v=2'; // Rotation support
-import { AnimationController } from './js/animationController.js?v=4'; // Final button changes
+import { InputHandler } from './js/inputHandler.js';
+import { AnimationController } from './js/animationController.js';
 
 
 // ============================================================
-// STATE - Shared across all modules
+// STATE
 // ============================================================
 const state = {
     iteration: 0,
+    maxIteration: 0,  // set by manifest or probe during init
     isPlaying: false,
     isPaused: false,
     animationSpeed: 1.0,
 
     blocksPaths: [],
     blocksBounds: null,
+    detectedSwap: false,
     centroidMaps: {
         byGeoID20: new Map(),
         byGeoID: new Map(),
         byFeatId: new Map(),
     },
-    blockIdToFeature: new Map(),  // blockId -> feature for district coloring
+    blockIdToFeature: new Map(),
+    blockIdToGeometry: new Map(),
+    blockIdToBounds: new Map(),
 
     nodes: [],
     links: [],
     nodesById: {},
     rootId: null,
+    cutNodeId: null,
+    cutSideNodes: new Set(),
     metadata: null,
+
+    // Chain step data
+    stepData: null,
+    manifest: null,
+
+    // Frame animation (flattened from nested phases)
+    frames: null,
+    frameIndex: -1,
+    currentFrame: null,
+    phaseLabel: "",
+    detailLevel: "detailed",  // "overview" or "detailed"
+
+    // Phase-specific rendering data (set by _applyFrame)
+    mergedSuperdistricts: new Set(),
+    mergedBaseNodes: new Set(),
+    supergraphEdges: [],
+    supergraphNodes: {},
+    extractedNodes: new Set(),
+    proposedCenters: {},
+    energyProposed: 0,
+    energyCurrent: 0,
+    stepAccepted: false,
 
     districts: new Map(),
     nodeColorOverrides: new Map(),
-    districtBlockColors: new Map(),  // blockId -> color (fixed across iterations)
-    blockIdToGeometry: new Map(),    // blockId -> geometry for rendering
-    blockIdToBounds: new Map(),      // blockId -> [minx, miny, maxx, maxy] - NEEDED FOR HIT DETECTION
-    blockIdToDistrictId: new Map(),  // blockId -> districtId (iteration number)
-    districtMetadata: new Map(),     // districtId -> metadata object
+    districtBlockColors: new Map(),
+    blockIdToDistrictId: new Map(),
+    districtMetadata: new Map(),
 
-    // District boundaries
-    districtBoundaries: new Map(),      // districtId -> Path2D boundary
-    districtBoundaryColors: new Map(),  // districtId -> color
+    districtBoundaries: new Map(),
+    districtBoundaryColors: new Map(),
 
-    // Visualization mode toggles
-    stateMode: 'initial',        // 'initial' or 'intermediate'
-    viewMode: 'district',        // 'tree' or 'district'
-    districtColoring: 'colored', // 'colored' or 'uncolored'
-
-    // Data paths
-    treePath: 'data/trees',      // Current tree data path
-    districtPath: 'data/districts', // Current district data path
+    viewMode: 'district',            // 'tree' or 'district'
+    districtColoring: 'colored',     // 'colored' or 'uncolored'
 
     transform: { x: 0, y: 0, k: 1, angle: 0 },
     initialTransform: null,
@@ -60,8 +79,8 @@ const state = {
     flipX: false,
 
     highlightNodeId: null,
-    highlightBlockId: null,          // blockId being hovered (for tree node hovers)
-    highlightDistrictId: null,       // districtId being hovered (for district hovers)
+    highlightBlockId: null,
+    highlightDistrictId: null,
     highlightUntil: 0,
 };
 
@@ -73,7 +92,7 @@ const statusPanel = document.getElementById("statusPanel");
 const tooltip = document.getElementById("tooltip");
 
 // ============================================================
-// INSTANTIATE ALL MODULES
+// INSTANTIATE MODULES
 // ============================================================
 const logger = new Logger(statusPanel, CONFIG);
 const dataLoader = new DataLoader(logger);
@@ -84,92 +103,107 @@ const inputHandler = new InputHandler(canvas, viewManager);
 const animationController = new AnimationController(dataLoader, logger, CONFIG);
 
 // ============================================================
-// HELPER FUNCTIONS
+// HELPERS
 // ============================================================
-
-// Update Mode Indicator Display
 function updateModeIndicator() {
-    const stateModeText = state.stateMode === 'initial' ? 'INITIAL' : 'INTERMEDIATE';
-    const viewModeText = state.viewMode === 'district' ? 'DISTRICT' : 'TREE';
-    const coloringText = state.districtColoring === 'colored' ? 'Colored' : 'Uncolored';
-
-    document.getElementById('currentStateMode').textContent = stateModeText;
-    document.getElementById('currentViewMode').textContent = viewModeText;
-    document.getElementById('currentColoringMode').textContent = coloringText;
+    const el1 = document.getElementById('currentViewMode');
+    const el2 = document.getElementById('currentColoringMode');
+    if (el1) el1.textContent = state.detailLevel.toUpperCase();
+    if (el2) {
+        // Don't echo the phase label here — it's already shown in the canvas overlay
+        // and in the metadata panel. Just show empty.
+        el2.textContent = "";
+    }
 }
 
 function resize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
-    console.log(`Canvas resized to: ${canvas.width}x${canvas.height}`);
     redraw();
 }
 
 window.addEventListener("resize", resize);
-
-// CRITICAL: Call resize immediately to set canvas size
 resize();
 
-function updateTreeMetadata() {
-    const treeMetadataPanel = document.getElementById("treeMetadata");
-    if (!treeMetadataPanel) return;
+function updateStepMetadata() {
+    const panel = document.getElementById("treeMetadata");
+    if (!panel) return;
 
-    if (!state.metadata) {
-        treeMetadataPanel.innerHTML = "<div style='color:#999;font-style:italic; font-size: 12px;'>No tree loaded</div>";
-        return;
+    const kv = (k, v) => `<div style="margin:3px 0;font-size:11px;word-break:break-word;"><b style="color:#90caf9;">${k}:</b> <span style="color:#fff;">${String(v)}</span></div>`;
+
+    let html = "";
+
+    // Phase label
+    if (state.phaseLabel) {
+        html += `<div style="font-size:13px;font-weight:bold;color:#1976d2;margin-bottom:6px;">${state.phaseLabel}</div>`;
     }
 
-    const fmtInt = new Intl.NumberFormat('en-US');
-    const kv = (k, v) => `<div style="margin:4px 0;font-size:11px;"><b style="color:#666;">${k}:</b> ${String(v)}</div>`;
-    treeMetadataPanel.innerHTML =
-        kv("ideal_pop", fmtInt.format(state.metadata.ideal_pop || 0)) +
-        kv("root", state.metadata.root) +
-        kv("n_teams", state.metadata.n_teams) +
-        kv("epsilon", state.metadata.epsilon) +
-        kv("two_sided", state.metadata.two_sided) +
-        kv("tot_candidates", state.metadata.tot_candidates) +
-        kv("tot_pop", fmtInt.format(state.metadata.tot_pop || 0));
-}
-
-function updateDistrictMetadata() {
-    // Placeholder for district metadata update logic
-    // This function would typically populate the #districtMetadata div
-    const districtMetadataPanel = document.getElementById("districtMetadata");
-    if (!districtMetadataPanel) return;
-
-    if (!state.districts || state.districts.size === 0) {
-        districtMetadataPanel.innerHTML = "<div style='color:#999;font-style:italic; font-size: 12px;'>No districts loaded</div>";
-        return;
+    // Step data
+    const sd = state.stepData;
+    if (sd) {
+        const numDistricts = sd.districts ? Object.keys(sd.districts).length : '?';
+        html += kv("state", sd.step);
+        html += kv("energy", sd.energy?.toFixed(1) ?? '?');
+        html += kv("districts", numDistricts);
     }
 
-    let html = '<div style="font-size: 12px; line-height: 1.6;">';
-    // Example: Displaying some info about the first district
-    const firstDistrictId = state.districts.keys().next().value;
-    if (firstDistrictId !== undefined) {
-        const district = state.districts.get(firstDistrictId);
-        html += `<div><b>First District ID:</b> ${firstDistrictId}</div>`;
-        if (district && district.population) {
-            html += `<div><b>Population:</b> ${new Intl.NumberFormat('en-US').format(district.population)}</div>`;
+    // Frame-specific info
+    const cf = state.currentFrame;
+    if (cf) {
+        if (cf.type === "select") {
+            html += '<hr style="border:none;border-top:1px solid #ddd;margin:6px 0;">';
+            html += kv("supergraph nodes", Object.keys(cf.data.supergraph_nodes || {}).length);
+            html += kv("merged superdistricts", (cf.data.selected_superdistricts || []).join(", "));
+            html += kv("merged base nodes", (cf.data.merged_base_nodes || []).length);
+        } else if (cf.type === "facility") {
+            html += '<hr style="border:none;border-top:1px solid #ddd;margin:6px 0;">';
+            html += kv("centers", Object.keys(cf.data.centers || {}).length);
+        } else if (cf.type === "accept_reject") {
+            html += '<hr style="border:none;border-top:1px solid #ddd;margin:6px 0;">';
+            html += kv("E(proposed)", cf.data.energy_proposed?.toFixed(1));
+            html += kv("E(current)", cf.data.energy_current?.toFixed(1));
+            const delta = (cf.data.energy_proposed - cf.data.energy_current).toFixed(1);
+            html += kv("\u0394E", delta);
+            const acceptColor = cf.data.accepted ? "#2e7d32" : "#c62828";
+            html += `<div style="margin:6px 0;font-size:13px;font-weight:bold;color:${acceptColor};">${cf.data.accepted ? "ACCEPTED" : "REJECTED"}</div>`;
+        } else if (cf.type === "tree_cut") {
+            html += `<div style="font-size:10px;color:#888;margin-top:4px;">${cf.sectionLabel}</div>`;
         }
-        // Add more district-specific metadata as needed
     }
-    html += '</div>';
-    districtMetadataPanel.innerHTML = html;
+
+    // Tree cut info (shown during phase 2+3)
+    if (state.metadata?.n_cuts != null) {
+        html += '<hr style="border:none;border-top:1px solid #ddd;margin:6px 0;">';
+        html += kv("admissible cuts", state.metadata.n_cuts);
+        html += kv("\u03C8 chosen/total", `${state.metadata.psi_chosen?.toFixed(2)} / ${state.metadata.psi_total?.toFixed(2)}`);
+        if (state.metadata.cut_side_size != null) {
+            html += kv("cut side", `${state.metadata.cut_side_size} nodes`);
+        }
+    }
+
+    // Params
+    if (state.manifest?.parameters) {
+        const p = state.manifest.parameters;
+        html += '<hr style="border:none;border-top:1px solid #ddd;margin:6px 0;">';
+        html += kv("\u03B5", p.epsilon);
+        html += kv("d\u0304", p.demand_target);
+        html += kv("c_max", p.capacity_level);
+    }
+
+    panel.innerHTML = html || "<div style='color:#999;font-style:italic;font-size:12px;'>No data</div>";
+    updateModeIndicator();
 }
 
 function redraw() {
-    updateTreeMetadata();
-    updateDistrictMetadata();
-
-    // Draw using the renderer
+    updateStepMetadata();
     renderer.draw(state, n => toleranceChecker.isWithinTolerance(n, state.metadata));
 }
 
 // ============================================================
-// EVENT LISTENERS - UI CONTROLS
+// EVENT LISTENERS
 // ============================================================
 document.getElementById("playBtn").addEventListener("click", () => {
-    animationController.play(state, redraw, viewManager, updateTreeMetadata);
+    animationController.play(state, redraw, viewManager, updateStepMetadata);
 });
 
 document.getElementById("pauseBtn").addEventListener("click", () => {
@@ -182,9 +216,49 @@ document.getElementById("stopBtn").addEventListener("click", () => {
 
 document.getElementById("finalBtn").addEventListener("click", () => {
     if (state.maxIteration) {
-        logger.log(`Jumping to final iteration ${state.maxIteration}...`, "info");
-        animationController.jumpToIteration(state.maxIteration, state, redraw, viewManager, state.centroidMaps, updateTreeMetadata);
+        logger.log(`Jumping to final state ${state.maxIteration}...`, "info");
+        animationController.jumpToIteration(state.maxIteration, state, redraw, viewManager, state.centroidMaps, updateStepMetadata);
     }
+});
+
+document.getElementById("nextBtn").addEventListener("click", async () => {
+    if (state.detailLevel === "overview") {
+        // In overview, next = next step
+        const next = state.iteration + 1;
+        if (state.maxIteration && next > state.maxIteration) return;
+        await animationController.jumpToIteration(next, state, redraw, viewManager, state.centroidMaps, updateStepMetadata);
+        return;
+    }
+    // Try advancing within current step's frames
+    if (animationController.advanceOneFrame(state)) {
+        redraw();
+        updateStepMetadata();
+        return;
+    }
+    // All frames exhausted — go to next step, show first frame
+    const next = state.iteration + 1;
+    if (state.maxIteration && next > state.maxIteration) return;
+    await animationController.jumpToIteration(next, state, redraw, viewManager, state.centroidMaps, updateStepMetadata);
+});
+
+document.getElementById("prevBtn").addEventListener("click", async () => {
+    if (state.detailLevel === "overview") {
+        // In overview, prev = previous step
+        const prev = state.iteration - 1;
+        if (prev < 1) return;
+        await animationController.jumpToIteration(prev, state, redraw, viewManager, state.centroidMaps, updateStepMetadata);
+        return;
+    }
+    // Try retreating within current step's frames
+    if (animationController.retreatOneFrame(state)) {
+        redraw();
+        updateStepMetadata();
+        return;
+    }
+    // At first frame — go to previous step, show first frame
+    const prev = state.iteration - 1;
+    if (prev < 1) return;
+    await animationController.jumpToIteration(prev, state, redraw, viewManager, state.centroidMaps, updateStepMetadata);
 });
 
 const resetViewBtn = document.getElementById("resetViewBtn");
@@ -198,94 +272,51 @@ if (resetViewBtn) {
 document.getElementById("speedSlider").addEventListener("input", e => {
     state.animationSpeed = parseFloat(e.target.value);
     document.getElementById("speedLabel").textContent = `${state.animationSpeed}x`;
-    logger.log(`Speed: ${state.animationSpeed}x`);
 });
 
 document.getElementById("goBtn").addEventListener("click", async () => {
     const targetIter = parseInt(document.getElementById("iterationInput").value, 10);
     if (isNaN(targetIter) || targetIter < 0) {
-        logger.warn("Invalid iteration number");
+        logger.warn("Invalid step number");
         return;
     }
-    await animationController.jumpToIteration(targetIter, state, redraw, viewManager, state.centroidMaps, updateTreeMetadata);
+    await animationController.jumpToIteration(targetIter, state, redraw, viewManager, state.centroidMaps, updateStepMetadata);
 });
 
-document.getElementById("debugMode").addEventListener("change", e => {
-    CONFIG.debug = e.target.checked;
-    logger.log(`Debug mode: ${CONFIG.debug ? "ON" : "OFF"}`);
-});
-
-document.getElementById("toggleStateBtn").addEventListener("click", e => {
-    if (state.stateMode === 'initial') {
-        state.stateMode = 'intermediate';
-        e.target.textContent = "Switch to Initial";
-        state.treePath = 'data/int_trees';
-        state.districtPath = 'data/int_districts';
-        logger.log("Switched to Intermediate Mode");
-
-        // Show coloring button only if in district mode
-        if (state.viewMode === 'district') {
-            document.getElementById("toggleColoringBtn").style.display = "inline-block";
-        }
-    } else {
-        state.stateMode = 'initial';
-        e.target.textContent = "Switch to Intermediate";
-        state.treePath = 'data/trees';
-        state.districtPath = 'data/districts';
-        state.districtColoring = 'colored'; // Force colored in initial mode
-        logger.log("Switched to Initial Mode");
-
-        // Hide coloring button in initial mode
-        document.getElementById("toggleColoringBtn").style.display = "none";
-        document.getElementById("toggleColoringBtn").textContent = "Show Uncolored";
-    }
-    updateModeIndicator();  // Update mode display
-    // Assuming loadIterationData is a new function to be called
-    // If it's not defined, this will cause an error.
-    // For now, I'll add it as requested, but it might need to be defined elsewhere.
-    // loadIterationData(state.iteration); // This line was in the provided snippet but not in the original context.
-    redraw();
-});
-
-document.getElementById("toggleModeBtn").addEventListener("click", e => {
-    if (state.viewMode === 'district') {
-        state.viewMode = 'tree';
-        e.target.textContent = "Switch to District Mode";
-        document.getElementById("toggleColoringBtn").style.display = "none";
-        logger.log("Switched to Tree Mode");
-    } else {
-        state.viewMode = 'district';
-        e.target.textContent = "Switch to Tree Mode";
-
-        // Show coloring button only in intermediate mode
-        if (state.stateMode === 'intermediate') {
-            document.getElementById("toggleColoringBtn").style.display = "inline-block";
-        }
-        logger.log("Switched to District Mode");
-    }
-    updateModeIndicator();  // Update mode display
-    redraw();
-});
-
-const toggleColoringBtn = document.getElementById("toggleColoringBtn");
-if (toggleColoringBtn) { // Null check for the button
-    toggleColoringBtn.addEventListener("click", e => {
-        if (state.districtColoring === 'colored') {
-            state.districtColoring = 'uncolored';
-            e.target.textContent = "Show Colored";
-            logger.log("Districts: Uncolored view");
-        } else {
-            state.districtColoring = 'colored';
-            e.target.textContent = "Show Uncolored";
-            logger.log("Districts: Colored view");
-        }
-        updateModeIndicator();  // Update mode display
-        redraw();
+const debugEl = document.getElementById("debugMode");
+if (debugEl) {
+    debugEl.addEventListener("change", e => {
+        CONFIG.debug = e.target.checked;
     });
-} // End of null check
+}
+
+// Detail level toggle
+const toggleDetailBtn = document.getElementById("toggleDetailBtn");
+if (toggleDetailBtn) {
+    toggleDetailBtn.addEventListener("click", (e) => {
+        if (state.detailLevel === "detailed") {
+            state.detailLevel = "overview";
+            e.target.textContent = "Detailed Mode";
+        } else {
+            state.detailLevel = "detailed";
+            e.target.textContent = "Overview Mode";
+        }
+        logger.log(`Detail level: ${state.detailLevel}`);
+        updateModeIndicator();
+        // Re-apply current step in the new mode
+        if (state.iteration > 0) {
+            animationController.jumpToIteration(
+                state.iteration, state, redraw, viewManager,
+                state.centroidMaps, updateStepMetadata
+            );
+        } else {
+            redraw();
+        }
+    });
+}
 
 // ============================================================
-// MOUSE & INPUT LISTENERS
+// MOUSE LISTENERS
 // ============================================================
 inputHandler.attachMouseListeners(canvas, state, viewManager, redraw, state.nodes, toleranceChecker, state.metadata, tooltip);
 
@@ -297,58 +328,45 @@ addEventListener('resize', resize);
 async function init() {
     try {
         logger.updateStatus("Initializing...", "info");
-        logger.log("Starting initialization...");
 
-        // CHANGE START
-        logger.log("Loading blocks.json...");
-        const { blocksBounds, detectedSwap } = await dataLoader.loadBlocks(state.blocksPaths, state.centroidMaps, state.blockIdToFeature, state.blockIdToGeometry, state.blockIdToBounds);
-        logger.log(`Blocks loaded. blocksPaths length: ${state.blocksPaths.length}`);
-        logger.log(`VERIFY: blocksPaths[0] type = ${state.blocksPaths[0]?.constructor?.name}`);
-        logger.log(`VERIFY: blocksPaths is array? ${Array.isArray(state.blocksPaths)}`);
+        // 1. Load blocks
+        const { blocksBounds, detectedSwap } = await dataLoader.loadBlocks(
+            state.blocksPaths, state.centroidMaps, state.blockIdToFeature,
+            state.blockIdToGeometry, state.blockIdToBounds
+        );
+        state.blocksBounds = blocksBounds;
+        state.detectedSwap = detectedSwap;
+        logger.log(`Blocks: ${state.blocksPaths.length} polygons`);
 
-        state.blocksBounds = blocksBounds; // <--- Store bounds in state
-        state.detectedSwap = detectedSwap; // <--- Store detectedSwap in state
-        logger.log(`Blocks bounds set: ${JSON.stringify(blocksBounds)}`);
-        // CHANGE END
+        resize();
+        viewManager.autoCenterAndScale(state);
+        redraw();
 
-        // CRITICAL: Resize canvas BEFORE setting view transform
-        logger.log("Resizing canvas...");
-        resize(); // This will also call redraw()
-
-        // Set initial view transformation based on loaded blocks bounds
-        logger.log("Setting initial view...");
-        viewManager.autoCenterAndScale(state); // <--- Call ViewManager to calculate initial transform
-
-        resize(); // resize calls redraw()
-        redraw(); // The first draw should now use the correct transform
-        logger.log("Initial render complete");
-
-        // Detect max iterations
-        let maxIter = 1; // Initialize a variable to track the max iteration
-
-        for (let i = 1; i < 10000; i++) { // Increased limit for safety
-            const response = await fetch(`data/trees/tree_${i}.json`, { method: "HEAD" });
-
-            if (response.ok) {
-                // File exists, update the max iteration
-                maxIter = i;
-            } else if (response.status === 404) {
-                // File not found (404 is the expected break condition)
-                break;
-            } else {
-                // Handle other errors (e.g., server error)
-                logger.warn(`Error checking file tree_${i}.json: Status ${response.status}`);
-                break;
+        // 2. Load manifest (new format)
+        const manifest = await dataLoader.loadManifest();
+        if (manifest && manifest.total_steps) {
+            state.manifest = manifest;
+            state.maxIteration = manifest.total_steps;
+            logger.log(`Chain: ${manifest.total_steps} steps, ${manifest.graph_nodes} nodes`, "success");
+        } else {
+            // Fallback: probe for old-format tree files
+            logger.log("No manifest — probing for tree files...", "info");
+            let maxIter = 0;
+            for (let i = 1; i < 10000; i++) {
+                const response = await fetch(`data/trees/tree_${i}.json`, { method: "HEAD" });
+                if (response.ok) {
+                    maxIter = i;
+                } else {
+                    break;
+                }
             }
+            state.maxIteration = maxIter;
         }
 
-        // Store the determined max iteration in the state
-        state.maxIteration = maxIter;
-        logger.log(`Ready! Max iterations: ${state.maxIteration}`, "success");
+        logger.log(`Ready! Max steps: ${state.maxIteration}`, "success");
 
     } catch (err) {
         logger.error(`Init failed: ${err.message}`);
-        logger.error(`Stack: ${err.stack}`);
         console.error("Initialization error:", err);
     }
 }

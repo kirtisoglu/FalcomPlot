@@ -25,34 +25,42 @@
             bottom: 20px;
             right: 20px;
             width: 300px;
-            /* Match sidebar width */
             max-height: 80vh;
-            /* Increased from 60vh - more vertical space available */
             overflow-y: auto;
-            /* Allow scrolling if content exceeds height */
-            background: rgba(255, 255, 255, 0.95);
+            background: transparent;
+            border: 1px solid #2196f3;
             padding: 16px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            border-radius: 6px;
             z-index: 1000;
             font-size: 13px;
+            color: #ffffff;
+            scrollbar-width: thin;
+            scrollbar-color: #2196f3 transparent;
+        }
+
+        #controls * {
+            color: #ffffff;
+        }
+
+        #controls label {
+            color: #90caf9 !important;
         }
 
         #controls h2 {
             font-size: 14px;
             font-weight: 600;
             margin-bottom: 12px;
-            color: #333;
-            border-bottom: 2px solid #2196f3;
+            color: #ffffff !important;
+            border-bottom: 1px solid rgba(33, 150, 243, 0.6);
             padding-bottom: 6px;
         }
 
         #controls button {
             padding: 6px 12px;
             margin: 4px 4px 4px 0;
-            background: #2196f3;
-            color: white;
-            border: none;
+            background: rgba(33, 150, 243, 0.25);
+            color: #ffffff !important;
+            border: 1px solid #2196f3;
             border-radius: 4px;
             cursor: pointer;
             font-size: 12px;
@@ -61,15 +69,25 @@
         }
 
         #controls button:hover {
-            background: #1976d2;
+            background: rgba(33, 150, 243, 0.55);
         }
 
         #controls input {
             padding: 4px 8px;
             margin-right: 8px;
             font-size: 13px;
-            border: 1px solid #999;
+            background: transparent;
+            border: 1px solid rgba(33, 150, 243, 0.6);
             border-radius: 4px;
+            color: #ffffff;
+        }
+
+        #controls input[type="number"] {
+            color: #ffffff;
+        }
+
+        #controls input[type="range"] {
+            accent-color: #2196f3;
         }
 
         canvas {
@@ -172,26 +190,74 @@
 
         #sidebar {
             position: absolute;
-            top: 0;
-            right: 0;
+            top: 16px;
+            right: 16px;
             width: 300px;
-            max-height: 50vh;
-            /* Only take up 50% of viewport height */
-            background: rgba(255, 255, 255, 0.98);
-            border-left: 1px solid #ccc;
+            max-height: calc(50vh - 16px);
+            background: transparent;
+            border: 1px solid #2196f3;
+            border-radius: 6px;
             padding: 12px 16px;
             box-sizing: border-box;
             z-index: 500;
-            /* Lower than controls (1000) */
             overflow-y: auto;
+            color: #ffffff;
+            scrollbar-width: thin;
+            scrollbar-color: #2196f3 transparent;
+        }
+
+        #sidebar::-webkit-scrollbar,
+        #controls::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        #sidebar::-webkit-scrollbar-track,
+        #controls::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        #sidebar::-webkit-scrollbar-thumb,
+        #controls::-webkit-scrollbar-thumb {
+            background: rgba(33, 150, 243, 0.6);
+            border-radius: 4px;
+            border: 1px solid rgba(33, 150, 243, 0.8);
+        }
+
+        #sidebar::-webkit-scrollbar-thumb:hover,
+        #controls::-webkit-scrollbar-thumb:hover {
+            background: #2196f3;
+        }
+
+        /* Also style scrollable status log inside sidebar */
+        #statusPanel::-webkit-scrollbar {
+            width: 6px;
+        }
+        #statusPanel::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        #statusPanel::-webkit-scrollbar-thumb {
+            background: rgba(33, 150, 243, 0.5);
+            border-radius: 3px;
+        }
+
+        #sidebar h2,
+        #sidebar h3,
+        #sidebar div,
+        #sidebar span,
+        #sidebar b {
+            color: #ffffff !important;
         }
 
         #sidebar h2 {
             margin: 0 0 12px 0;
             font-size: 16px;
             font-weight: 600;
-            border-bottom: 2px solid #eee;
+            border-bottom: 1px solid rgba(33, 150, 243, 0.6);
             padding-bottom: 8px;
+        }
+
+        #sidebar h3 {
+            color: #90caf9 !important;
         }
 
         .status {
@@ -220,16 +286,16 @@
 
 <body>
     <div id="controls">
-        <div style="margin-bottom: 8px;">
-            <button id="playBtn">▶ Play</button>
-            <button id="pauseBtn">⏸ Pause</button>
-            <button id="stopBtn">⏹ Stop</button>
-            <button id="finalBtn">⏭ Final</button>
+        <div style="margin-bottom: 8px; display: flex; gap: 3px; flex-wrap: wrap;">
+            <button id="prevBtn" style="padding:6px 8px;">◀</button>
+            <button id="playBtn" style="padding:6px 8px;">▶</button>
+            <button id="pauseBtn" style="padding:6px 8px;">⏸</button>
+            <button id="stopBtn" style="padding:6px 8px;">⏹</button>
+            <button id="finalBtn" style="padding:6px 8px;">⏭</button>
+            <button id="nextBtn" style="padding:6px 8px;">▶|</button>
         </div>
         <div style="margin-bottom: 8px;">
-            <button id="toggleStateBtn">Switch to Intermediate</button>
-            <button id="toggleModeBtn">Switch to Tree Mode</button>
-            <button id="toggleColoringBtn" style="display:none;">Show Uncolored</button>
+            <button id="toggleDetailBtn">Overview Mode</button>
         </div>
         <div>
             <label>Speed:</label>
@@ -248,13 +314,13 @@
 
         <!-- MODE INDICATOR - INSIDE CONTROL PANEL AT BOTTOM -->
         <div
-            style="margin-top: 16px; padding: 10px; background: #e3f2fd; border-radius: 4px; border-left: 3px solid #2196f3;">
-            <div style="font-size: 10px; font-weight: 600; color: #1976d2; margin-bottom: 4px;">CURRENT MODE</div>
-            <div style="font-size: 12px; font-weight: bold; color: #0d47a1;">
-                <span id="currentStateMode">INITIAL</span> | <span id="currentViewMode">DISTRICT</span>
+            style="margin-top: 16px; padding: 10px; background: rgba(33, 150, 243, 0.1); border-radius: 4px; border-left: 3px solid #2196f3;">
+            <div style="font-size: 10px; font-weight: 600; color: #90caf9; margin-bottom: 4px;">CURRENT MODE</div>
+            <div style="font-size: 12px; font-weight: bold; color: #ffffff;">
+                <span id="currentViewMode">DETAILED</span>
             </div>
-            <div style="font-size: 9px; color: #424242; margin-top: 4px;">
-                <span id="currentColoringMode">Colored</span> Districts
+            <div style="font-size: 10px; color: #bbdefb; margin-top: 4px; word-break: break-word; white-space: pre-line;">
+                <span id="currentColoringMode"></span>
             </div>
         </div>
     </div>
