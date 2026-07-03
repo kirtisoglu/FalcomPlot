@@ -16,7 +16,7 @@ export const CONFIG = {
         blockFill: "rgba(80,80,80,0.7)",      // Lighter gray, more opaque for visibility
         blockStroke: "rgba(180,180,180,0.9)", // Much lighter stroke for clear boundaries
     },
-    animationDuration: 400,
+    animationDuration: 80,
     framePadding: 40,
     highlightFlashDuration: 600,
     debug: false,

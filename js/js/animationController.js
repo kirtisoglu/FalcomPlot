@@ -219,7 +219,7 @@ export class AnimationController {
         if (state.isPlaying) {
             const isTreeCut = state.currentFrame?.type === "tree_cut";
             const delay = isTreeCut
-                ? (this.config.animationDuration * 2) / state.animationSpeed
+                ? (this.config.animationDuration * 1.5) / state.animationSpeed
                 : this.config.animationDuration / state.animationSpeed;
             setTimeout(() => this._nextFrame(state, redraw, viewManager, onStepLoaded), delay);
         }
@@ -243,7 +243,6 @@ export class AnimationController {
         if (state.maxIteration && nextIter > state.maxIteration) return false;
 
         state.iteration = nextIter;
-        document.getElementById("currentIter").textContent = nextIter;
 
         // Load step assignment
         const stepData = await this.dataLoader.loadStep(nextIter);
@@ -275,7 +274,6 @@ export class AnimationController {
         if (state.maxIteration && nextIter > state.maxIteration) return false;
 
         state.iteration = nextIter;
-        document.getElementById("currentIter").textContent = nextIter;
 
         // Load step assignment (districts)
         const stepData = await this.dataLoader.loadStep(nextIter);
@@ -325,7 +323,6 @@ export class AnimationController {
         state.isPlaying = false;
         state.iteration = targetIter;
         this._clearPhaseState(state);
-        document.getElementById("currentIter").textContent = targetIter;
 
         const stepData = await this.dataLoader.loadStep(targetIter);
         if (stepData) {

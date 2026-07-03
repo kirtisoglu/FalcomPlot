@@ -70,7 +70,9 @@ export class Renderer {
                     }
                 }
             } else {
-                // Detailed mode: outline only
+                // Detailed mode: fill each LSOA with its district colour
+                // (so the partition is legible at a glance) and overlay
+                // a phase-specific stroke when relevant.
                 const cutSideNodes = state.cutSideNodes || new Set();
                 const mergedBaseNodes = state.mergedBaseNodes || new Set();
                 const extractedNodes = state.extractedNodes || new Set();
@@ -79,30 +81,30 @@ export class Renderer {
                     const geom = state.blockIdToGeometry.get(blockId);
                     if (!geom) continue;
 
-                    let outlineColor = color;
-                    let lw = 0.5 / state.transform.k;
+                    let strokeColor = "rgba(0,0,0,0.35)";
+                    let lw = 0.3 / state.transform.k;
 
                     // Phase 1: highlight merged superdistrict blocks
                     if (frameType === "select" && mergedBaseNodes.has(blockId)) {
-                        outlineColor = "#ffff00";
+                        strokeColor = "#ffff00";
                         lw = 1.5 / state.transform.k;
                     }
                     // Phase 2+3: highlight cut side and extracted district
                     if (isTreePhase) {
                         if (extractedNodes.has(blockId)) {
-                            outlineColor = "#00ff88";
+                            strokeColor = "#00ff88";
                             lw = 1.5 / state.transform.k;
                         } else if (cutSideNodes.has(blockId)) {
-                            outlineColor = "rgba(255, 255, 100, 0.8)";
+                            strokeColor = "rgba(255, 255, 100, 0.8)";
                             lw = 1.0 / state.transform.k;
                         }
                     }
 
                     if (geom.type === "Polygon") {
-                        this.drawOutlineOnly(ctx, geom.coordinates, outlineColor, lw, state.detectedSwap);
+                        this.drawGeometry(ctx, geom.coordinates, color, strokeColor, lw, state.detectedSwap);
                     } else if (geom.type === "MultiPolygon") {
                         for (const poly of geom.coordinates) {
-                            this.drawOutlineOnly(ctx, poly, outlineColor, lw, state.detectedSwap);
+                            this.drawGeometry(ctx, poly, color, strokeColor, lw, state.detectedSwap);
                         }
                     }
                 }
@@ -225,6 +227,18 @@ export class Renderer {
             }
         }
 
+        // Marker sizes are in WORLD units, so they must scale with the
+        // dataset's extent: 0.15 is a good star radius on a 20-unit
+        // synthetic grid but covers a quarter of a lon/lat city map.
+        // Derive sizes from the world span (with the grid-era defaults
+        // as fallback when bounds are unknown).
+        const _wb = state.blocksBounds;
+        const _worldSpan = _wb
+            ? Math.max(_wb.maxx - _wb.minx, _wb.maxy - _wb.miny)
+            : 20;
+        const starRadius = _worldSpan / 130;
+        const centerRadius = _worldSpan / 65;
+
         // ==========================================
         // LAYER 4: Candidate stars (non-tree phases)
         // ==========================================
@@ -236,7 +250,7 @@ export class Renderer {
                     if (!isCandidate) continue;
                     const c = coords[nodeId];
                     if (!c) continue;
-                    this.drawStarPath(c[0], c[1], 0.15, 5, 0.5);
+                    this.drawStarPath(c[0], c[1], starRadius, 5, 0.5);
                     ctx.fillStyle = "#FFD700";
                     ctx.fill();
                     ctx.strokeStyle = "#333";
@@ -256,7 +270,7 @@ export class Renderer {
                 const c = coords[centerId];
                 if (!c) continue;
                 // Draw a cross/plus at facility center
-                const R = 0.3;
+                const R = centerRadius;
                 ctx.strokeStyle = "#00ffff";
                 ctx.lineWidth = 2 / state.transform.k;
                 ctx.beginPath();
@@ -264,6 +278,13 @@ export class Renderer {
                 ctx.moveTo(c[0], c[1] - R); ctx.lineTo(c[0], c[1] + R);
                 ctx.stroke();
             }
+        }
+
+        // ==========================================
+        // LAYER 5.5: Ensemble overlay (world space) — boundary or facility heatmap
+        // ==========================================
+        if (state.ensembleView && state.ensemble) {
+            this.drawEnsembleOverlay(ctx, state);
         }
 
         // ==========================================
@@ -419,6 +440,99 @@ export class Renderer {
         ctx.globalAlpha = 0.6;
         ctx.stroke(path);
         ctx.globalAlpha = 1.0;
+    }
+
+    /**
+     * Draw the ensemble-analysis overlay in world space.
+     * Modes:
+     *   "boundary"  — colour edges between block centroids by their
+     *                 boundary-frequency across the ensemble. Dark red
+     *                 for always-a-boundary (≥0.9), pale for sometimes
+     *                 (0.1..0.5), gray for never (<0.1).
+     *   "facility"  — colour candidate sites by their selection frequency.
+     *                 Larger filled circles = essential (≥0.9), smaller
+     *                 hollow = substitutable (<0.5).
+     *   "capacity"  — overlay a small histogram of demand-CV samples.
+     */
+    drawEnsembleOverlay(ctx, state) {
+        const ens = state.ensemble;
+        const view = state.ensembleView;
+        if (!ens) return;
+
+        const coords = state.manifest?.node_coordinates || {};
+        const centroidById = state.centroidMaps?.byFeatId;
+
+        function resolveCoord(id) {
+            const sid = String(id);
+            if (coords[sid]) return coords[sid];
+            if (centroidById && centroidById.get(sid)) return centroidById.get(sid);
+            return null;
+        }
+
+        if (view === 'boundary') {
+            const freqs = ens.boundary_frequencies || {};
+            const lw = 1.6 / state.transform.k;
+            ctx.lineWidth = lw;
+            for (const [edge, f] of Object.entries(freqs)) {
+                if (f < 0.05) continue;
+                const [a, b] = edge.split('|');
+                const ca = resolveCoord(a);
+                const cb = resolveCoord(b);
+                if (!ca || !cb) continue;
+                ctx.strokeStyle = this._heatColor(f);
+                ctx.beginPath();
+                ctx.moveTo(ca[0], ca[1]);
+                ctx.lineTo(cb[0], cb[1]);
+                ctx.stroke();
+            }
+        } else if (view === 'facility') {
+            const freqs = ens.facility_frequencies || {};
+            const baseR = 4 / state.transform.k;
+            for (const [nid, f] of Object.entries(freqs)) {
+                const c = resolveCoord(nid);
+                if (!c) continue;
+                const r = baseR * (0.6 + 1.4 * f);
+                ctx.beginPath();
+                ctx.arc(c[0], c[1], r, 0, Math.PI * 2);
+                if (f >= 0.9) {
+                    // Essential — solid red
+                    ctx.fillStyle = '#e6194b';
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 0.6 / state.transform.k;
+                    ctx.fill();
+                    ctx.stroke();
+                } else if (f >= 0.5) {
+                    // Common — orange filled, lighter
+                    ctx.fillStyle = '#f58231';
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 0.4 / state.transform.k;
+                    ctx.globalAlpha = 0.85;
+                    ctx.fill();
+                    ctx.stroke();
+                    ctx.globalAlpha = 1.0;
+                } else {
+                    // Substitutable — hollow ring
+                    ctx.strokeStyle = '#42d4f4';
+                    ctx.lineWidth = 1.0 / state.transform.k;
+                    ctx.globalAlpha = 0.7;
+                    ctx.stroke();
+                    ctx.globalAlpha = 1.0;
+                }
+            }
+        } else if (view === 'capacity') {
+            // Capacity uses a separate screen-space histogram (drawn in HUD).
+            // Render an unobtrusive marker for now.
+        }
+    }
+
+    /** Map a frequency in [0,1] to a heat colour (gray → orange → dark red). */
+    _heatColor(f) {
+        if (f < 0.1) return 'rgba(180, 180, 180, 0.35)';
+        if (f < 0.3) return 'rgba(255, 209, 102, 0.7)';
+        if (f < 0.5) return 'rgba(245, 130, 49, 0.8)';
+        if (f < 0.7) return 'rgba(229, 81, 47, 0.85)';
+        if (f < 0.9) return 'rgba(200, 30, 30, 0.9)';
+        return 'rgba(150, 20, 30, 1.0)';
     }
 
     lightenColor(color, percent) {

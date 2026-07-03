@@ -281,35 +281,86 @@
             border-color: #66bb6a;
             color: #2e7d32;
         }
+
+        /* Step-metadata markup emitted by mountFalcomPlot.js */
+        .fp-kv {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            font-size: 12px;
+            margin: 2px 0;
+        }
+
+        .fp-phase-label {
+            font-weight: 600;
+            color: #90caf9 !important;
+            margin-bottom: 6px;
+            white-space: pre-line;
+        }
+
+        .fp-section-label {
+            font-size: 11px;
+            color: #bbdefb !important;
+            margin-top: 6px;
+        }
+
+        .fp-accept {
+            margin-top: 6px;
+            font-weight: 700;
+            text-align: center;
+            border-radius: 4px;
+            padding: 3px;
+        }
+
+        .fp-accepted {
+            background: rgba(102, 187, 106, 0.25);
+            color: #a5d6a7 !important;
+        }
+
+        .fp-rejected {
+            background: rgba(239, 83, 80, 0.25);
+            color: #ef9a9a !important;
+        }
+
+        .fp-no-data {
+            font-size: 12px;
+            color: #90a4ae !important;
+        }
     </style>
 </head>
 
 <body>
     <div id="controls">
         <div style="margin-bottom: 8px; display: flex; gap: 3px; flex-wrap: wrap;">
-            <button id="prevBtn" style="padding:6px 8px;">◀</button>
-            <button id="playBtn" style="padding:6px 8px;">▶</button>
-            <button id="pauseBtn" style="padding:6px 8px;">⏸</button>
-            <button id="stopBtn" style="padding:6px 8px;">⏹</button>
-            <button id="finalBtn" style="padding:6px 8px;">⏭</button>
-            <button id="nextBtn" style="padding:6px 8px;">▶|</button>
+            <button id="fp-prevBtn" style="padding:6px 8px;">◀</button>
+            <button id="fp-playBtn" style="padding:6px 8px;">▶</button>
+            <button id="fp-pauseBtn" style="padding:6px 8px;">⏸</button>
+            <button id="fp-stopBtn" style="padding:6px 8px;">⏹</button>
+            <button id="fp-finalBtn" style="padding:6px 8px;">⏭</button>
+            <button id="fp-nextBtn" style="padding:6px 8px;">▶|</button>
         </div>
         <div style="margin-bottom: 8px;">
-            <button id="toggleDetailBtn">Overview Mode</button>
+            <button id="fp-toggleDetailBtn">Overview</button>
         </div>
         <div>
             <label>Speed:</label>
-            <input type="range" id="speedSlider" min="0.5" max="3" step="0.5" value="1" style="width: 100px;">
-            <span id="speedLabel">1x</span>
+            <input type="range" id="fp-speedSlider" min="0.5" max="3" step="0.5" value="1" style="width: 100px;">
+            <span id="fp-speedLabel">1x</span>
         </div>
         <div style="margin-top: 8px;">
             <label>Iteration:</label>
-            <input type="number" id="iterationInput" min="0" value="0" style="width: 60px;">
-            <button id="goBtn">Go</button>
+            <input type="number" id="fp-iterationInput" min="0" value="0" style="width: 60px;">
+            <button id="fp-goBtn">Go</button>
         </div>
-
         <div style="margin-top: 8px;">
-            <label><input type="checkbox" id="debugMode"> Debug Mode</label>
+            <label>Ensemble:</label>
+            <select id="fp-ensembleSelect"
+                style="background: transparent; color: #fff; border: 1px solid rgba(33, 150, 243, 0.6); border-radius: 4px; padding: 4px;">
+                <option value="none">off</option>
+                <option value="boundary">boundary frequency</option>
+                <option value="facility">facility stability</option>
+                <option value="capacity">capacity</option>
+            </select>
         </div>
 
         <!-- MODE INDICATOR - INSIDE CONTROL PANEL AT BOTTOM -->
@@ -317,29 +368,20 @@
             style="margin-top: 16px; padding: 10px; background: rgba(33, 150, 243, 0.1); border-radius: 4px; border-left: 3px solid #2196f3;">
             <div style="font-size: 10px; font-weight: 600; color: #90caf9; margin-bottom: 4px;">CURRENT MODE</div>
             <div style="font-size: 12px; font-weight: bold; color: #ffffff;">
-                <span id="currentViewMode">DETAILED</span>
+                <span id="fp-currentViewMode">DETAILED</span>
             </div>
             <div style="font-size: 10px; color: #bbdefb; margin-top: 4px; word-break: break-word; white-space: pre-line;">
-                <span id="currentColoringMode"></span>
+                <span id="fp-currentColoringMode"></span>
             </div>
         </div>
     </div>
-
-    <div id="debug-panel">Debug Log:<br></div>
 
     <aside id="sidebar">
         <h2>Animation Status</h2>
 
         <div style="margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #eee;">
-            <h3 style="font-size: 12px; font-weight: 600; color: #666; margin: 0 0 8px 0;">TREE METADATA (Iteration
-                <span id="currentIter">0</span>)
-            </h3>
+            <h3 style="font-size: 12px; font-weight: 600; color: #666; margin: 0 0 8px 0;">STEP METADATA</h3>
             <div id="treeMetadata"></div>
-        </div>
-
-        <div style="margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #eee;">
-            <h3 style="font-size: 12px; font-weight: 600; color: #666; margin: 0 0 8px 0;">DISTRICT METADATA</h3>
-            <div id="districtMetadata"></div>
         </div>
 
         <div>
@@ -352,10 +394,8 @@
     <canvas id="graphCanvas"></canvas>
     <div id="tooltip"></div>
 
-    <!-- D3.js Library for geographic projections and data manipulation -->
-    <script src="https://d3js.org/d3.v7.min.js"></script>
-
-    <!-- THIS IS THE MAIN MODULE THAT IMPORTS AND USES ALL OTHER MODULES -->
+    <!-- Thin bootstrap around js/mountFalcomPlot.js — the same mount
+         API the SvelteKit dashboard embeds. -->
     <script type="module" src="./main.js"></script>
 </body>
 

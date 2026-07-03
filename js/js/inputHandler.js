@@ -171,7 +171,19 @@ export class InputHandler {
         let isRotating = false;
         let rotationStart = { x: 0, y: 0, startAngle: 0 };
 
-        canvas.addEventListener("mousedown", e => {
+        // Track every listener so the host can detach all of them when
+        // the FalcomPlot instance unmounts. Without this, switching
+        // datasets leaves old listeners attached to the same canvas
+        // alongside the new ones, so each mousemove fires both old
+        // and new redraws — the old one paints the previous dataset
+        // back over the new one ("ghost plot" artefact).
+        const handlers = [];
+        const on = (ev, fn, opts) => {
+            canvas.addEventListener(ev, fn, opts);
+            handlers.push([ev, fn, opts]);
+        };
+
+        on("mousedown", e => {
             if (e.button === 2) { // Right-click for rotation
                 e.preventDefault();
                 isRotating = true;
@@ -186,7 +198,7 @@ export class InputHandler {
             }
         });
 
-        canvas.addEventListener("mousemove", e => {
+        on("mousemove", e => {
             if (isRotating) {
                 // Calculate rotation based on horizontal mouse movement
                 const dx = e.clientX - rotationStart.x;
@@ -272,12 +284,12 @@ export class InputHandler {
             }
         });
 
-        canvas.addEventListener("mouseup", () => {
+        on("mouseup", () => {
             this.isDragging = false;
             isRotating = false;
         });
 
-        canvas.addEventListener("mouseleave", () => {
+        on("mouseleave", () => {
             this.isDragging = false;
             isRotating = false;
             tooltip.style.display = "none";
@@ -287,12 +299,12 @@ export class InputHandler {
         });
 
         // Prevent context menu on right-click
-        canvas.addEventListener("contextmenu", e => {
+        on("contextmenu", e => {
             e.preventDefault();
             return false;
         });
 
-        canvas.addEventListener("wheel", e => {
+        on("wheel", e => {
             e.preventDefault();
             const scale = e.deltaY < 0 ? 1.1 : 0.9;
             const m = viewManager.getMousePos(e, state);
@@ -301,5 +313,12 @@ export class InputHandler {
             state.transform.k *= scale;
             redraw();
         }, { passive: false });
+
+        return function detachMouseListeners() {
+            for (const [ev, fn, opts] of handlers) {
+                canvas.removeEventListener(ev, fn, opts);
+            }
+            handlers.length = 0;
+        };
     }
 }
