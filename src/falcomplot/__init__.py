@@ -13,10 +13,30 @@ Functions
 ---------
 animate(data_path, port=0, open_browser=True)
     Launch the FalcomPlot JS visualization server.
+
+Modules
+-------
+grid
+    Static matplotlib figures for grid-shaped graphs
+    (``plot_grid``, ``plot_partition``, ``animate_chain``).
+ensemble
+    Ensemble and convergence diagnostics (``plot_trace``,
+    ``plot_convergence``, ``plot_boundary_frequency``,
+    ``gelman_rubin``, ``effective_sample_size``,
+    ``cut_frequencies``).
 """
 
 from .server import start_server
 from . import mapping
+from .grid import animate_chain, plot_grid, plot_partition
+from .ensemble import (
+    cut_frequencies,
+    effective_sample_size,
+    gelman_rubin,
+    plot_boundary_frequency,
+    plot_convergence,
+    plot_trace,
+)
 import os
 
 
