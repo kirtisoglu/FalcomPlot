@@ -254,6 +254,19 @@ export class DataLoader {
             ? stepNum
             : state.currentAssignmentStep;
         state.stepData = stepData;
+
+        // Optional per-step layers. Datasets that record them get the
+        // facility-center crosses and the super-district boundary layer
+        // outside the substep animation:
+        //   supers  — {district_id: super_id}
+        //   centers — {district_id: node_id} selected facility per district
+        state.currentSupers = stepData.supers
+            ? new Map(Object.entries(stepData.supers).map(
+                ([d, s]) => [String(d), String(s)]))
+            : null;
+        if (stepData.centers) {
+            state.proposedCenters = stepData.centers;
+        }
         return state.stableDistrictColors.size;
     }
 

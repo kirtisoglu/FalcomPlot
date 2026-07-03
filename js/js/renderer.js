@@ -1,4 +1,6 @@
 // Canvas rendering
+import { GeometryUtils } from "./geometry.js";
+
 export class Renderer {
     constructor(canvas, config, visual) {
         this.canvas = canvas;
@@ -281,6 +283,41 @@ export class Renderer {
         }
 
         // ==========================================
+        // LAYER 5.25: Super-district boundaries (world space)
+        // ==========================================
+        // Drawn along the TRUE shared borders between blocks whose
+        // districts belong to different super-districts. Requires the
+        // step to carry a `supers` map ({district: super}) and block
+        // polygons that share vertices along common borders.
+        if (state.currentSupers && state.currentAssignment?.size
+            && state.blockIdToGeometry?.size) {
+            if (!state._sharedSegments) {
+                state._sharedSegments = GeometryUtils.buildSharedSegmentIndex(
+                    state.blockIdToGeometry, state.detectedSwap,
+                );
+            }
+            const superOf = (blockId) => {
+                const d = state.currentAssignment.get(String(blockId));
+                return d == null ? undefined : state.currentSupers.get(String(d));
+            };
+            ctx.save();
+            ctx.strokeStyle = "rgba(10, 10, 14, 0.95)";
+            ctx.lineWidth = 3.2 / state.transform.k;
+            ctx.lineCap = "round";
+            ctx.beginPath();
+            for (const s of state._sharedSegments) {
+                const sa = superOf(s.blockA);
+                const sb = superOf(s.blockB);
+                if (sa !== undefined && sb !== undefined && sa !== sb) {
+                    ctx.moveTo(s.ax, s.ay);
+                    ctx.lineTo(s.bx, s.by);
+                }
+            }
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // ==========================================
         // LAYER 5.5: Ensemble overlay (world space) — boundary or facility heatmap
         // ==========================================
         if (state.ensembleView && state.ensemble) {
@@ -387,8 +424,140 @@ export class Renderer {
             ctx.restore();
         }
 
+        // ==========================================
+        // LAYER 7: Legend (screen space, bottom-left)
+        // ==========================================
+        if (this.config.showLegend !== false) {
+            this.drawLegend(ctx, state);
+        }
+
         ctx.restore();
     }
+
+    /**
+     * Compact legend, bottom-left, screen space. Entries adapt to what
+     * is actually on screen: districts always; super boundaries,
+     * candidate stars, facility crosses, and ensemble encodings only
+     * when their layer is active. Disable with config.showLegend=false.
+     */
+    drawLegend(ctx, state) {
+        const entries = [];
+        entries.push({ swatch: "district", label: "districts (color = level-1)" });
+        if (state.currentSupers) {
+            entries.push({ swatch: "superline", label: "super-district boundary" });
+        }
+        const anyCandidate = state.manifest?.node_candidates
+            && Object.values(state.manifest.node_candidates).some(Boolean);
+        if (anyCandidate) {
+            entries.push({ swatch: "star", label: "candidate facility site" });
+        }
+        if (state.proposedCenters && Object.keys(state.proposedCenters).length) {
+            entries.push({ swatch: "cross", label: "selected facility" });
+        }
+        if (state.ensembleView === "boundary") {
+            entries.push({ swatch: "heat", label: "boundary frequency (pale → dark)" });
+        } else if (state.ensembleView === "facility") {
+            entries.push({ swatch: "essential", label: "essential site (≥90% of plans)" });
+            entries.push({ swatch: "subst", label: "substitutable site (<50%)" });
+        }
+        if (!entries.length) return;
+
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.font = "11px sans-serif";
+
+        const rowH = 18;
+        const padX = 10;
+        const padY = 8;
+        const swatchW = 26;
+        let maxW = 0;
+        for (const e of entries) {
+            const w = ctx.measureText(e.label).width;
+            if (w > maxW) maxW = w;
+        }
+        const boxW = padX * 2 + swatchW + 6 + maxW;
+        const boxH = padY * 2 + rowH * entries.length - 4;
+        const x0 = 10;
+        const y0 = this.canvas.height - boxH - 10;
+
+        ctx.fillStyle = "rgba(0,0,0,0.72)";
+        ctx.fillRect(x0, y0, boxW, boxH);
+
+        let y = y0 + padY + 9;
+        for (const e of entries) {
+            const cx = x0 + padX + swatchW / 2;
+            if (e.swatch === "district") {
+                const colors = ["#4a90d9", "#67b26f", "#e2a33d"];
+                colors.forEach((c, i) => {
+                    ctx.fillStyle = c;
+                    ctx.fillRect(x0 + padX + i * 8, y - 6, 7, 9);
+                });
+            } else if (e.swatch === "superline") {
+                ctx.strokeStyle = "rgba(10,10,14,0.95)";
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(x0 + padX, y - 1);
+                ctx.lineTo(x0 + padX + swatchW, y - 1);
+                ctx.stroke();
+                ctx.strokeStyle = "rgba(255,255,255,0.5)";
+                ctx.lineWidth = 0.5;
+                ctx.stroke();
+            } else if (e.swatch === "star") {
+                this.drawStarPathAt(ctx, cx, y - 2, 6);
+                ctx.fillStyle = "#FFD700";
+                ctx.fill();
+                ctx.strokeStyle = "#333";
+                ctx.lineWidth = 0.8;
+                ctx.stroke();
+            } else if (e.swatch === "cross") {
+                ctx.strokeStyle = "#00ffff";
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(cx - 6, y - 2); ctx.lineTo(cx + 6, y - 2);
+                ctx.moveTo(cx, y - 8); ctx.lineTo(cx, y + 4);
+                ctx.stroke();
+            } else if (e.swatch === "heat") {
+                const ramp = ["rgba(180,180,180,0.5)", "rgba(255,209,102,0.9)",
+                              "rgba(245,130,49,0.9)", "rgba(150,20,30,1.0)"];
+                ramp.forEach((c, i) => {
+                    ctx.fillStyle = c;
+                    ctx.fillRect(x0 + padX + i * 6.5, y - 6, 6, 8);
+                });
+            } else if (e.swatch === "essential") {
+                ctx.fillStyle = "#e6194b";
+                ctx.beginPath();
+                ctx.arc(cx, y - 2, 5, 0, Math.PI * 2);
+                ctx.fill();
+            } else if (e.swatch === "subst") {
+                ctx.strokeStyle = "#42d4f4";
+                ctx.lineWidth = 1.4;
+                ctx.beginPath();
+                ctx.arc(cx, y - 2, 4, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            ctx.fillStyle = "#e8eaf0";
+            ctx.fillText(e.label, x0 + padX + swatchW + 6, y + 2);
+            y += rowH;
+        }
+        ctx.restore();
+    }
+
+    /** Star path on an explicit context at screen coordinates. */
+    drawStarPathAt(ctx, x, y, rOuter, spikes = 5, inset = 0.5) {
+        const rot = Math.PI / 2 * 3;
+        const step = Math.PI / spikes;
+        ctx.beginPath();
+        ctx.moveTo(x, y - rOuter);
+        let rotA = rot;
+        for (let i = 0; i < spikes; i++) {
+            ctx.lineTo(x + Math.cos(rotA) * rOuter, y + Math.sin(rotA) * rOuter);
+            rotA += step;
+            ctx.lineTo(x + Math.cos(rotA) * (rOuter * inset), y + Math.sin(rotA) * (rOuter * inset));
+            rotA += step;
+        }
+        ctx.closePath();
+    }
+
     drawGeometry(ctx, coords, color, strokeColor, lineWidth, detectedSwap) {
         const path = new Path2D();
         for (const ring of coords) {

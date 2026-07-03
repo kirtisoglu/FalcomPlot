@@ -15,6 +15,7 @@ mountFalcomPlot({
     statusEl: document.getElementById("statusPanel"),
     treeMetaEl: document.getElementById("treeMetadata"),
     tooltipEl: document.getElementById("tooltip"),
+    sparklineEl: document.getElementById("sparkline"),
     dataPath: "data",
 }).catch((err) => {
     console.error("FalcomPlot failed to start:", err);

@@ -142,6 +142,7 @@ export async function mountFalcomPlot(opts) {
         statusEl = null,
         treeMetaEl = null,
         tooltipEl = null,
+        sparklineEl = null,
         dataPath,
         controlIds = {
             play: 'fp-playBtn',
@@ -283,6 +284,59 @@ export async function mountFalcomPlot(opts) {
             html ||
             '<div class="fp-no-data">No data</div>';
         updateModeIndicator();
+        updateSparkline();
+    }
+
+    // Sparkline ----------------------------------------------------------
+    // A small SVG energy (or any scalar) trace under the canvas, synced
+    // to the scrubber. Needs manifest.energy_series (one value per step)
+    // and a host element (opts.sparklineEl). Click to seek.
+    let _spark = null;
+
+    function initSparkline() {
+        const series = state.manifest?.energy_series;
+        if (!sparklineEl || !Array.isArray(series) || series.length < 2) return;
+        const vals = series.map(Number);
+        const n = vals.length;
+        const W = 100, H = 28, PAD = 2; // viewBox units; CSS scales it
+        let lo = Infinity, hi = -Infinity;
+        for (const v of vals) {
+            if (Number.isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+        }
+        if (!(hi > lo)) return;
+        const x = (i) => PAD + (i / (n - 1)) * (W - 2 * PAD);
+        const y = (v) => H - PAD - ((v - lo) / (hi - lo)) * (H - 2 * PAD);
+        const pts = vals.map((v, i) => `${x(i).toFixed(2)},${y(v).toFixed(2)}`).join(' ');
+        const label = state.manifest.energy_series_label || 'energy';
+        sparklineEl.innerHTML =
+            `<div class="fp-spark-label">${label} over the chain — click to seek</div>` +
+            `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" ` +
+            `style="display:block;width:100%;height:100%;cursor:pointer;">` +
+            `<polyline points="${pts}" fill="none" stroke="#5b8cc8" ` +
+            `stroke-width="0.7" vector-effect="non-scaling-stroke"/>` +
+            `<line class="fp-spark-marker" x1="0" x2="0" y1="0" y2="${H}" ` +
+            `stroke="#ffd54f" stroke-width="1.2" vector-effect="non-scaling-stroke"/>` +
+            `</svg>`;
+        const svg = sparklineEl.querySelector('svg');
+        _spark = { svg, marker: svg.querySelector('.fp-spark-marker'), n, x };
+        on(svg, 'click', (e) => {
+            const rect = svg.getBoundingClientRect();
+            const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+            const target = Math.max(1, Math.round(frac * (n - 1)) + 1);
+            animationController.jumpToIteration(
+                target, state, redraw, viewManager,
+                state.centroidMaps, updateStepMetadata,
+            );
+        });
+        updateSparkline();
+    }
+
+    function updateSparkline() {
+        if (!_spark) return;
+        const i = Math.min(_spark.n - 1, Math.max(0, (state.iteration ?? 1) - 1));
+        const xi = _spark.x(i).toFixed(2);
+        _spark.marker.setAttribute('x1', xi);
+        _spark.marker.setAttribute('x2', xi);
     }
 
     function redraw() {
@@ -480,6 +534,7 @@ export async function mountFalcomPlot(opts) {
                 `Chain: ${manifest.total_steps} steps, ${manifest.graph_nodes} nodes`,
                 'success',
             );
+            initSparkline();
         }
 
         if (state.maxIteration > 0) {

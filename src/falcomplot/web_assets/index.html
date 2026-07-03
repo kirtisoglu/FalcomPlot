@@ -327,7 +327,7 @@
             color: #90a4ae !important;
         }
     </style>
-  <script type="module" crossorigin src="./assets/main-DGYJ17dr.js"></script>
+  <script type="module" crossorigin src="./assets/main-vPudChU8.js"></script>
 </head>
 
 <body>
@@ -393,6 +393,10 @@
     </aside>
 
     <canvas id="graphCanvas"></canvas>
+    <!-- Bottom-center: the canvas legend owns bottom-left, controls bottom-right. -->
+    <div id="sparkline"
+        style="position: absolute; left: 50%; transform: translateX(-50%); bottom: 20px; width: 320px; height: 64px; z-index: 1000; background: rgba(0,0,0,0.72); border: 1px solid #2196f3; border-radius: 6px; padding: 6px 8px;">
+    </div>
     <div id="tooltip"></div>
 
     <!-- Thin bootstrap around js/mountFalcomPlot.js — the same mount
