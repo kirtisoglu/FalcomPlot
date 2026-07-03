@@ -56,6 +56,14 @@ export class Renderer {
         // ==========================================
         // LAYER 1: District coloring
         // ==========================================
+        // Neutral mode (state.districtColorsOff): drop the district
+        // color fills to a flat dark tone so overlay layers — ensemble
+        // heat, candidate stars, facility crosses — read clearly. The
+        // partition stays legible through district strokes and the
+        // super-boundary layer.
+        const colorsOff = !!state.districtColorsOff;
+        const NEUTRAL_FILL = "#20242e";
+        const NEUTRAL_STROKE = "rgba(255,255,255,0.13)";
         if (state.blockIdToDistrictId.size > 0) {
             if (isOverview) {
                 // Overview mode: fill entire cells with district color
@@ -63,11 +71,13 @@ export class Renderer {
                     const geom = state.blockIdToGeometry.get(blockId);
                     if (!geom) continue;
 
+                    const fill = colorsOff ? NEUTRAL_FILL : color;
+                    const stroke = colorsOff ? NEUTRAL_STROKE : "rgba(0,0,0,0.4)";
                     if (geom.type === "Polygon") {
-                        this.drawGeometry(ctx, geom.coordinates, color, "rgba(0,0,0,0.4)", 0.3 / state.transform.k, state.detectedSwap);
+                        this.drawGeometry(ctx, geom.coordinates, fill, stroke, 0.3 / state.transform.k, state.detectedSwap);
                     } else if (geom.type === "MultiPolygon") {
                         for (const poly of geom.coordinates) {
-                            this.drawGeometry(ctx, poly, color, "rgba(0,0,0,0.4)", 0.3 / state.transform.k, state.detectedSwap);
+                            this.drawGeometry(ctx, poly, fill, stroke, 0.3 / state.transform.k, state.detectedSwap);
                         }
                     }
                 }
@@ -83,7 +93,7 @@ export class Renderer {
                     const geom = state.blockIdToGeometry.get(blockId);
                     if (!geom) continue;
 
-                    let strokeColor = "rgba(0,0,0,0.35)";
+                    let strokeColor = colorsOff ? NEUTRAL_STROKE : "rgba(0,0,0,0.35)";
                     let lw = 0.3 / state.transform.k;
 
                     // Phase 1: highlight merged superdistrict blocks
@@ -102,11 +112,12 @@ export class Renderer {
                         }
                     }
 
+                    const fill = colorsOff ? NEUTRAL_FILL : color;
                     if (geom.type === "Polygon") {
-                        this.drawGeometry(ctx, geom.coordinates, color, strokeColor, lw, state.detectedSwap);
+                        this.drawGeometry(ctx, geom.coordinates, fill, strokeColor, lw, state.detectedSwap);
                     } else if (geom.type === "MultiPolygon") {
                         for (const poly of geom.coordinates) {
-                            this.drawGeometry(ctx, poly, color, strokeColor, lw, state.detectedSwap);
+                            this.drawGeometry(ctx, poly, fill, strokeColor, lw, state.detectedSwap);
                         }
                     }
                 }
@@ -442,7 +453,11 @@ export class Renderer {
      */
     drawLegend(ctx, state) {
         const entries = [];
-        entries.push({ swatch: "district", label: "districts (color = level-1)" });
+        if (state.districtColorsOff) {
+            entries.push({ swatch: "neutral", label: "district colors hidden" });
+        } else {
+            entries.push({ swatch: "district", label: "districts (color = level-1)" });
+        }
         if (state.currentSupers) {
             entries.push({ swatch: "superline", label: "super-district boundary" });
         }
@@ -492,6 +507,11 @@ export class Renderer {
                     ctx.fillStyle = c;
                     ctx.fillRect(x0 + padX + i * 8, y - 6, 7, 9);
                 });
+            } else if (e.swatch === "neutral") {
+                ctx.fillStyle = "#20242e";
+                ctx.strokeStyle = "rgba(255,255,255,0.3)";
+                ctx.fillRect(x0 + padX, y - 6, 24, 9);
+                ctx.strokeRect(x0 + padX, y - 6, 24, 9);
             } else if (e.swatch === "superline") {
                 ctx.strokeStyle = "rgba(10,10,14,0.95)";
                 ctx.lineWidth = 3;

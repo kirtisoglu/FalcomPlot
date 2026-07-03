@@ -156,6 +156,7 @@ export async function mountFalcomPlot(opts) {
             iter: 'fp-iterationInput',
             go: 'fp-goBtn',
             toggleDetail: 'fp-toggleDetailBtn',
+            toggleColors: 'fp-toggleColorsBtn',
             currentViewMode: 'fp-currentViewMode',
             currentColoringMode: 'fp-currentColoringMode',
             ensembleSelect: 'fp-ensembleSelect',
@@ -464,12 +465,33 @@ export async function mountFalcomPlot(opts) {
             redraw();
         }
     });
+    const toggleColorsBtn = $(controlIds.toggleColors);
+
+    function setDistrictColors(off) {
+        state.districtColorsOff = off;
+        if (toggleColorsBtn) {
+            toggleColorsBtn.textContent = off
+                ? 'District colors: off'
+                : 'District colors: on';
+        }
+    }
+    setDistrictColors(false);
+
+    on(toggleColorsBtn, 'click', () => {
+        setDistrictColors(!state.districtColorsOff);
+        redraw();
+    });
+
     on(ensembleSelect, 'change', async (e) => {
         const v = e.target.value;
         state.ensembleView = v === 'none' ? null : v;
         if (state.ensembleView && !state.ensemble) {
             state.ensemble = await dataLoader.loadEnsemble();
         }
+        // Ensemble heat / facility markers are illegible over the
+        // district color fills — mute them while an overlay is active.
+        // The Colors button can re-enable at any time.
+        setDistrictColors(!!state.ensembleView);
         redraw();
     });
 
