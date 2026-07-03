@@ -19,6 +19,9 @@ Modules
 grid
     Static matplotlib figures for grid-shaped graphs
     (``plot_grid``, ``plot_partition``, ``animate_chain``).
+geo
+    Static matplotlib maps for real geographic instances
+    (``plot_units``, ``plot_dual_graph``).
 ensemble
     Ensemble and convergence diagnostics (``plot_trace``,
     ``plot_convergence``, ``plot_boundary_frequency``,
@@ -29,6 +32,7 @@ ensemble
 from .server import start_server
 from . import mapping
 from .grid import animate_chain, plot_grid, plot_partition
+from .geo import plot_dual_graph, plot_units
 from .ensemble import (
     cut_frequencies,
     effective_sample_size,
