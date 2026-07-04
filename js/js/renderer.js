@@ -455,6 +455,8 @@ export class Renderer {
         const entries = [];
         if (state.districtColorsOff) {
             entries.push({ swatch: "neutral", label: "district colors hidden" });
+        } else if (state.currentSupers && state.currentSupers.size) {
+            entries.push({ swatch: "tones", label: "hue = super-district, tone = district" });
         } else {
             entries.push({ swatch: "district", label: "districts (color = level-1)" });
         }
@@ -507,6 +509,13 @@ export class Renderer {
                     ctx.fillStyle = c;
                     ctx.fillRect(x0 + padX + i * 8, y - 6, 7, 9);
                 });
+            } else if (e.swatch === "tones") {
+                // three tones of one hue = one super-district's districts
+                ["hsl(210,64%,44%)", "hsl(210,60%,58%)", "hsl(210,68%,70%)"]
+                    .forEach((c, i) => {
+                        ctx.fillStyle = c;
+                        ctx.fillRect(x0 + padX + i * 8, y - 6, 7, 9);
+                    });
             } else if (e.swatch === "neutral") {
                 ctx.fillStyle = "#20242e";
                 ctx.strokeStyle = "rgba(255,255,255,0.3)";

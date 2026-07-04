@@ -245,19 +245,9 @@ export class DataLoader {
             && state.currentAssignment.size > 0
         );
 
-        if (isDelta) {
-            this._applyDelta(stepData, state);
-        } else {
-            this._applyFull(stepData, state);
-        }
-        state.currentAssignmentStep = stepNum !== null
-            ? stepNum
-            : state.currentAssignmentStep;
-        state.stepData = stepData;
-
-        // Optional per-step layers. Datasets that record them get the
-        // facility-center crosses and the super-district boundary layer
-        // outside the substep animation:
+        // Optional per-step layers, set BEFORE coloring so the palette
+        // can encode the hierarchy. Datasets that record them also get
+        // the facility-center crosses and the super-district boundary:
         //   supers  — {district_id: super_id}
         //   centers — {district_id: node_id} selected facility per district
         state.currentSupers = stepData.supers
@@ -267,7 +257,30 @@ export class DataLoader {
         if (stepData.centers) {
             state.proposedCenters = stepData.centers;
         }
+
+        if (isDelta) {
+            this._applyDelta(stepData, state);
+        } else {
+            this._applyFull(stepData, state);
+        }
+        state.currentAssignmentStep = stepNum !== null
+            ? stepNum
+            : state.currentAssignmentStep;
+        state.stepData = stepData;
         return state.stableDistrictColors.size;
+    }
+
+    /** Colors for the current districts: hierarchy-aware when a
+     *  district->super map is present (each super-district gets a base
+     *  hue, its districts get distinct tones), else the flat graph
+     *  coloring. */
+    _districtColors(neighbours, state) {
+        if (state.currentSupers && state.currentSupers.size > 0) {
+            return this._colorBySuperdistrict(
+                neighbours, state.currentSupers);
+        }
+        return this._graphColorDistricts(
+            neighbours, state.stableDistrictColors);
     }
 
     /** Rebuild from a full assignment dict (used for jumps + step 1). */
@@ -284,9 +297,7 @@ export class DataLoader {
         }
 
         const neighbours = this._buildDistrictAdjacency(state.currentAssignment, state);
-        const colours = this._graphColorDistricts(
-            neighbours, state.stableDistrictColors,
-        );
+        const colours = this._districtColors(neighbours, state);
         state.stableDistrictColors = colours;
 
         for (const [nodeId, did] of state.currentAssignment) {
@@ -319,15 +330,16 @@ export class DataLoader {
         // Allocate colours for any new district id, then refresh blocks
         // belonging to dirty districts only.
         const neighbours = this._buildDistrictAdjacency(state.currentAssignment, state);
-        const colours = this._graphColorDistricts(
-            neighbours, state.stableDistrictColors,
-        );
+        const colours = this._districtColors(neighbours, state);
         state.stableDistrictColors = colours;
 
-        // Recolour every node whose district is dirty. Cheap because
-        // each dirty district owns ~50 LSOAs at LAS scale.
+        // In hierarchy-tone mode a super-district's hue depends on its
+        // neighbours, so a district that did not itself move can still
+        // change tone. Repaint all nodes in that mode; otherwise repaint
+        // only the dirty districts (cheap: ~50 LSOAs each at LAS scale).
+        const repaintAll = !!(state.currentSupers && state.currentSupers.size);
         for (const [nodeId, did] of state.currentAssignment) {
-            if (!dirty.has(did)) continue;
+            if (!repaintAll && !dirty.has(did)) continue;
             const c = colours.get(did);
             state.districtBlockColors.set(nodeId, c);
             state.nodeColorOverrides.set(nodeId, c);
@@ -433,6 +445,78 @@ export class DataLoader {
      * that are new this step or whose previous colour now collides with
      * a neighbour get a fresh palette/HSL pick.
      */
+    /**
+     * Hierarchy-aware coloring: every super-district gets a base hue,
+     * and its constituent level-1 districts get distinct tones (lightness
+     * steps) of that hue. Adjacent super-districts get different hues via
+     * greedy coloring on the lifted super-adjacency, so the two-level
+     * structure is legible from color alone, not only from the boundary
+     * overlay.
+     *
+     * @param districtNeighbors Map<district, Set<district>>
+     * @param superOf Map<district, super>
+     * @returns Map<district, hsl string>
+     */
+    _colorBySuperdistrict(districtNeighbors, superOf) {
+        // Well-separated base hues; reused across non-adjacent supers.
+        const HUES = [0, 210, 130, 38, 280, 172, 320, 95, 244, 18, 152, 300];
+
+        // super -> its districts
+        const districtsOf = new Map();
+        for (const did of districtNeighbors.keys()) {
+            const s = superOf.get(did);
+            if (s === undefined) continue;
+            if (!districtsOf.has(s)) districtsOf.set(s, []);
+            districtsOf.get(s).push(did);
+        }
+
+        // Lift district adjacency to super adjacency.
+        const superNeighbors = new Map();
+        for (const s of districtsOf.keys()) superNeighbors.set(s, new Set());
+        for (const [did, nbrs] of districtNeighbors) {
+            const s = superOf.get(did);
+            if (s === undefined) continue;
+            for (const nb of nbrs) {
+                const t = superOf.get(nb);
+                if (t !== undefined && t !== s) {
+                    superNeighbors.get(s).add(t);
+                    if (superNeighbors.has(t)) superNeighbors.get(t).add(s);
+                }
+            }
+        }
+
+        // Greedy hue assignment, most-constrained super first.
+        const supers = [...districtsOf.keys()].sort(
+            (a, b) => superNeighbors.get(b).size - superNeighbors.get(a).size);
+        const hueIdxOf = new Map();
+        for (const s of supers) {
+            const taken = new Set();
+            for (const nb of superNeighbors.get(s)) {
+                if (hueIdxOf.has(nb)) taken.add(hueIdxOf.get(nb));
+            }
+            let idx = 0;
+            while (idx < HUES.length && taken.has(idx)) idx++;
+            if (idx >= HUES.length) idx = supers.indexOf(s) % HUES.length;
+            hueIdxOf.set(s, idx);
+        }
+
+        // Tones within each super: spread lightness, alternate saturation
+        // slightly so adjacent same-hue districts stay distinguishable.
+        const colours = new Map();
+        for (const [s, dists] of districtsOf) {
+            const hue = HUES[hueIdxOf.get(s)];
+            const ordered = [...dists].sort();     // stable within a super
+            const n = ordered.length;
+            ordered.forEach((did, i) => {
+                const t = n <= 1 ? 0.5 : i / (n - 1);
+                const light = Math.round(40 + t * 34);       // 40%..74%
+                const sat = 60 + (i % 2 === 0 ? 8 : -4);     // 56..68%
+                colours.set(did, `hsl(${hue}, ${sat}%, ${light}%)`);
+            });
+        }
+        return colours;
+    }
+
     _graphColorDistricts(districtNeighbors, previous = null) {
         const palette = [
             "#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4",

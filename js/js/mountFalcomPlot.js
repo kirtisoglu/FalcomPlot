@@ -143,6 +143,7 @@ export async function mountFalcomPlot(opts) {
         treeMetaEl = null,
         tooltipEl = null,
         sparklineEl = null,
+        initialStep = 1,
         dataPath,
         controlIds = {
             play: 'fp-playBtn',
@@ -560,11 +561,15 @@ export async function mountFalcomPlot(opts) {
         }
 
         if (state.maxIteration > 0) {
-            // Start at step 1 (the first recorded chain state) so the
-            // animation reads as a forward trajectory and the user can
-            // press Play / Next from the very beginning.
+            // Start at step 1 by default (a forward trajectory the user
+            // can Play from the beginning). opts.initialStep deep-links
+            // to a specific state, e.g. for a representative screenshot.
+            const start = Math.min(
+                state.maxIteration,
+                Math.max(1, Math.round(Number(initialStep) || 1)),
+            );
             await animationController.jumpToIteration(
-                1,
+                start,
                 state,
                 redraw,
                 viewManager,

@@ -16,6 +16,8 @@ mountFalcomPlot({
     treeMetaEl: document.getElementById("treeMetadata"),
     tooltipEl: document.getElementById("tooltip"),
     sparklineEl: document.getElementById("sparkline"),
+    // Optional deep-link: ?step=N opens directly on that chain state.
+    initialStep: Number(new URLSearchParams(location.search).get("step")) || 1,
     dataPath: "data",
 }).catch((err) => {
     console.error("FalcomPlot failed to start:", err);
